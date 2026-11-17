@@ -649,8 +649,8 @@ msgstr "Una tecla la mantiene"
 
 #: core/ui/ui_app.c
 msgctxt "BATT_BANNER_CHARGE_SOON"
-msgid "Battery %u%: charge soon"
-msgstr "Batería %u%: cargar pronto"
+msgid "Battery %u%%: charge soon"
+msgstr "Batería %u%%: cargar pronto"
 
 #: core/ui/ui_app.c
 msgctxt "TRUNK_TOAST_BACK_ON"
@@ -2718,9 +2718,9 @@ msgid "Hotspot: not in this build"
 msgstr "Hotspot: no disponible"
 
 #: core/ui/ui_menus.c
-msgctxt "BATT_PART_CHARGE_SOON"
-msgid "%: charge soon"
-msgstr "%: cargar pronto"
+msgctxt "BATT_VALUE_CHARGE_SOON"
+msgid "%u%%: charge soon"
+msgstr "%u%%: cargar pronto"
 
 #: core/ui/ui_menus.c
 msgctxt "CPLUG_VALUE_NONE_BUILT_IN"

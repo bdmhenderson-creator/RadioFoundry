@@ -4602,9 +4602,10 @@ static const char *info_body(void)
 			sb_volts(&b, ui_view()->supply_mv);
 			break;
 		}
-		sb_u32(&b, ui_st.battery_pct, 1);
-		sb_str(&b, ui_st.battery_pct <= (ui_st.low_batt_pct ? ui_st.low_batt_pct : 15) ?
-			TR(BATT_PART_CHARGE_SOON, "%: charge soon") : "%");
+		if (ui_st.battery_pct <= (ui_st.low_batt_pct ? ui_st.low_batt_pct : 15))
+			TRF(&b, BATT_VALUE_CHARGE_SOON, "%u%%: charge soon", ui_st.battery_pct);
+		else
+			sb_fmt(&b, "%u%%", ui_st.battery_pct);
 		break;
 	case INFO_CODEPLUG: {
 		static const tr_id_t src[] = { TRN(CPLUG_VALUE_NONE_BUILT_IN, "None: built-in channels"),
@@ -6784,23 +6785,18 @@ static void key_labels(void)
 		return;
 	key_label_lang = lang_current();
 	for (uint8_t r = 0; r < UI_KEY_ROLES; r++) {
-		for (uint8_t h = 0; h < 2; h++) {
-			// The key's name, then the same with "hold"
-			SB_LOCAL(key, sizeof key_label[0]);
-			if (board.side_key_names != NULL && r < board.side_key_count) {
-				sb_str(&key, board.side_key_names[r]);
-			} else if (board.home_key_names != NULL && r >= board.side_key_count &&
-				   r < board.side_key_count + board.home_key_count) {
-				sb_str(&key, board.home_key_names[r - board.side_key_count]);
-			} else {
-				TRF(&key, SET_LABEL_KEY_N, "Key %d", r + 1);
-			}
-			sb_init(&b, key_label[2 * r + h], sizeof key_label[0]);
-			if (h)
-				TRF(&b, SET_LABEL_KEY_HOLD, "%K hold", key_text);
-			else
-				sb_str(&b, key_text);
+		// The key's name, then the same with "hold"
+		sb_init(&b, key_label[2 * r], sizeof key_label[0]);
+		if (board.side_key_names != NULL && r < board.side_key_count) {
+			sb_str(&b, board.side_key_names[r]);
+		} else if (board.home_key_names != NULL && r >= board.side_key_count &&
+			   r < board.side_key_count + board.home_key_count) {
+			sb_str(&b, board.home_key_names[r - board.side_key_count]);
+		} else {
+			TRF(&b, SET_LABEL_KEY_N, "Key %d", r + 1);
 		}
+		sb_init(&b, key_label[2 * r + 1], sizeof key_label[0]);
+		TRF(&b, SET_LABEL_KEY_HOLD, "%K hold", key_label[2 * r]);
 	}
 }
 #endif
