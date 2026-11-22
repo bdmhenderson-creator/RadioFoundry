@@ -684,6 +684,135 @@ static void testHole(void)
 	CHECK(out_gap_chunks == 3 && out_nsync == 6, "reset: gaps %u syncs %u", out_gap_chunks, out_nsync);
 }
 
+#if CONFIG_AIR_RX_ADAPT
+// ── The adaptive options (air-interface.md 6.1): a profile's own, in memory its engine lends ──
+static air_softmodem_adapt_t adapt_mem;
+
+// A System Fusion-like profile: 4800 symbols/s, 2700 Hz, a 20-symbol sync opening every 480-symbol frame
+static air_profile_t ysf_like(uint8_t opts)
+{
+	air_profile_t p;
+
+	memset(&p, 0, sizeof(p));
+	p.sym_rate = 4800;
+	p.levels = 4;
+	p.shape = AIR_SHAPE_RRC;
+	p.shape_param = 20;
+	p.dev_outer_hz = 2700;
+	p.sync_any_syms = 480;
+	p.rx_opts = opts;
+	p.nsyncs = 1;
+	p.sync[0].id = 3;
+	p.sync[0].nsyms = 20;
+	memcpy(p.sync[0].syms, (uint8_t[]){ 0xD4, 0x71, 0xC9, 0x63, 0x4D }, 5);
+	return p;
+}
+
+// One run through the modem: symbol errors per ncmp from the first sync
+static double run_adapt(const air_profile_t *p, bool lend, uint32_t *nsync)
+{
+	air_softmodem_t m;
+	uint32_t nerr, ncmp;
+	double rms;
+
+	air_softmodem_lend(lend ? &adapt_mem : NULL);
+	air_softmodem_rx_open(&m, p, 8000, 2000, on_chunk, NULL);
+	out_reset();
+	feed(&m, 8000, 0, tap_n, 256);
+	air_softmodem_lend(NULL);
+	*nsync = out_nsync;
+	if (!compare(p, 200, 480, &nerr, &ncmp, &rms) || !ncmp)
+		return 1;
+	return (double)nerr / ncmp;
+}
+
+// A tone of amplitude a (counts) at f Hz added to the tap
+static void add_tone(double f, double a)
+{
+	for (uint32_t i = 0; i < tap_n; i++) {
+		double v = tap[i] + a * sin(2 * M_PI * f * i / 8000);
+
+		tap[i] = (int16_t)lround(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+	}
+}
+
+static void testAdapt(void)
+{
+	air_profile_t plain = ysf_like(0), eq = ysf_like(AIR_RX_EQ), tone = ysf_like(AIR_RX_TONE);
+	air_profile_t both = ysf_like(AIR_RX_EQ | AIR_RX_TONE);
+	air_softmodem_adapt_view_t v;
+	uint32_t ns0, ns1;
+	double e0, e1;
+
+	// A profile that asks for nothing gets nothing, lent memory or not: the plain receiver, symbol for symbol
+	air_stream(&plain, 0, 11000, 200, 480);
+	modulate(&plain, 0);
+	sample_tap(8000, 17, 3600, 2000, 300, 300);
+	e0 = run_adapt(&plain, false, &ns0);
+	{
+		static uint8_t first_hard[OUT_MAX];
+		uint32_t n0 = out_n;
+
+		memcpy(first_hard, out_hard, out_n);
+		e1 = run_adapt(&plain, true, &ns1);
+		CHECK(n0 == out_n && !memcmp(first_hard, out_hard, out_n) && e0 == e1, "no options asked: the same symbols");
+		air_softmodem_adapt_get(&v);
+		CHECK(v.opts == 0, "no options asked: none running (%u)", v.opts);
+	}
+
+	// A clean signal through the equalizer stays clean
+	sample_tap(8000, 17, 3600, 2000, 300, 0);
+	e1 = run_adapt(&eq, true, &ns1);
+	CHECK(e1 < 0.0005 && ns1 >= 20, "equalizer, clean: %.4f errors, %u syncs", e1, ns1);
+	air_softmodem_adapt_get(&v);
+	CHECK(v.opts == AIR_RX_EQ && v.eq_center > 16384 * 7 / 10 && v.eq_center < 16384 * 12 / 10 && v.eq_resets == 0,
+	      "equalizer, clean: center %d, resets %u", v.eq_center, v.eq_resets);
+
+	// The upper band cut, as a repeater's chain does, and noise: the equalizer takes out errors the filter leaves
+	for (unsigned hi = 2200; hi <= 2400; hi += 200) {
+		sample_tap(8000, 17, hi, 2000, 300, 350);
+		e0 = run_adapt(&plain, true, &ns0);
+		e1 = run_adapt(&eq, true, &ns1);
+		printf("  band cut to %u Hz: symbol errors %.2f %% plain, %.2f %% equalized\n", hi, 100 * e0, 100 * e1);
+		CHECK(e0 > 0.01 && e1 < e0 / 2 && ns1 >= ns0, "equalizer, band cut to %u Hz: %.4f against %.4f", hi, e1, e0);
+	}
+
+	// A 127.3 Hz tone of 0.4 of a level under the signal: found, notched, fewer errors
+	sample_tap(8000, 17, 3600, 2000, 300, 450);
+	add_tone(127.3, 0.4 * 1800);
+	e0 = run_adapt(&plain, true, &ns0);
+	e1 = run_adapt(&tone, true, &ns1);
+	air_softmodem_adapt_get(&v);
+	printf("  127.3 Hz tone: symbol errors %.2f %% plain, %.2f %% notched (found %u.%u Hz)\n", 100 * e0, 100 * e1,
+	       v.tone_dhz / 10, v.tone_dhz % 10);
+	CHECK(v.tone_dhz == 1273 && v.tone_picks >= 1, "tone found: %u", v.tone_dhz);
+	CHECK(e0 > 0.005 && e1 < e0 * 0.6, "tone notched: %.4f against %.4f", e1, e0);
+
+	// No tone: none picked, however long (and the same data again and again, as silence repeats, picks none)
+	sample_tap(8000, 17, 3600, 2000, 300, 300);
+	e1 = run_adapt(&both, true, &ns1);
+	air_softmodem_adapt_get(&v);
+	CHECK(v.tone_dhz == 0 && v.tone_picks == 0 && v.tone_blocks >= 4, "no tone: %u picked in %u blocks", v.tone_dhz,
+	      v.tone_blocks);
+	for (uint32_t k = 680; k < air_n; k++)
+		air[k] = air[200 + (k - 200) % 480];	// every frame the first one
+	modulate(&both, 0);
+	sample_tap(8000, 17, 3600, 2000, 300, 200);
+	run_adapt(&both, true, &ns1);
+	air_softmodem_adapt_get(&v);
+	CHECK(v.tone_dhz == 0, "repeating frames: no tone (%u)", v.tone_dhz);
+
+	// The bench turns an option off at once
+	sample_tap(8000, 17, 3600, 2000, 300, 250);
+	add_tone(127.3, 0.4 * 1800);
+	air_softmodem_adapt_off = AIR_RX_TONE;
+	run_adapt(&both, true, &ns1);
+	air_softmodem_adapt_get(&v);
+	air_softmodem_adapt_off = 0;
+	CHECK(v.opts == AIR_RX_EQ && v.tone_dhz == 0, "bench off: opts %u tone %u", v.opts, v.tone_dhz);
+}
+#endif
+
 int main(void)
 {
 	testFit();
@@ -694,6 +823,9 @@ int main(void)
 	testShapes();
 	testCall();
 	testHole();
+#if CONFIG_AIR_RX_ADAPT
+	testAdapt();
+#endif
 	printf("airSoftmodemTest: %d checks, %d failed\n", checks, failures);
 	return failures ? 1 : 0;
 }

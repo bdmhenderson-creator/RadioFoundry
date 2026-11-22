@@ -350,6 +350,11 @@
 #ifndef CONFIG_AIR
 #define CONFIG_AIR			(CONFIG_P25 || CONFIG_NXDN || CONFIG_YSF)
 #endif
+// Derived: the soft modem's adaptive receive options (air_profile_t.rx_opts, docs/spec/air-interface.md 6.1), built
+// with the modes that ask for them: YSF
+#ifndef CONFIG_AIR_RX_ADAPT
+#define CONFIG_AIR_RX_ADAPT		CONFIG_YSF
+#endif
 // P25 trunked: the codec of its systems and channels (docs/spec/p25-codeplug.md 3), the control channel decoded, voice
 // channel grants followed and, where the system allows it, registration and transmit on a grant (core/p25/p25_follow.c)
 #ifndef CONFIG_P25_TRUNK

@@ -172,6 +172,28 @@ a 64-bit gain product and ring indexes by `%`. The HI/LO unit's multiply-accumul
 eight of the dot product and is not used: the context switch does not save HI and LO. Open: a provider that knows
 the channel is empty (`AIR_CHUNK_NO_SIGNAL`) could stop feeding the modem.
 
+### 6.1 Adaptive receive options
+
+A mode may ask the soft modem for more than the plain receiver, in its profile's `rx_opts`. A mode that asks for
+nothing (P25, NXDN) gets the plain receiver, symbol for symbol. They are built only with a mode that uses them
+(`CONFIG_AIR_RX_ADAPT`, derived from `CONFIG_YSF`), and run in memory the mode's engine lends for its session
+(`air_softmodem_lend`, about 1.2 KB): the soft modem itself, which lives in memory a provider borrows, grows by a
+pointer.
+
+| Option | What it does |
+|---|---|
+| `AIR_RX_EQ` | A 7-tap equalizer, taps a symbol apart around each symbol, on the soft values: the symbols before from its own memory, those after from the line. Decision-directed normalized LMS towards the level decided (step 2^-6), adapted only on fresh timing (within the sync spacing of the last sync). The center tap is held within 0.7-1.2: free, it has a second resting point near 0.4, where the outer levels fall on the inner ones and the decisions hold it there. A side tap past 0.5 sends all of them back to a pass-through. Each new lock starts from a pass-through |
+| `AIR_RX_TONE` | A CTCSS tone under the signal found and notched. Each symbol's slicing error, less the one a frame (the sync spacing) earlier at the same place, goes through a Goertzel filter per standard tone (the 50 from 67.0 to 254.1 Hz) over blocks of four frames; coasting gives zeros. Differencing removes what repeats every frame, a transmission of silence as much as anything, which is a comb at the frame rate and not a tone. A tone whose power (weighted by what the differencing does at it) is six times the mean of the others (its neighbors left out) in two blocks running is notched on the input samples (zeros at the tone, poles inside at Q 20, unity gain at DC); a neighbor of the tone notched takes over only at twice its power. Each new lock starts with none. A tone within about 1 Hz of a multiple of the frame rate is differenced away and not found |
+
+The coefficients are worked out at open and at a pick in integers (a series cosine): no floating point is built in.
+The per-sample notch keeps to section 6's rules (32 bits, no divide); the equalizer divides once a symbol.
+`air_softmodem_adapt_off` turns an option off from the next symbol, for an A/B on the bench, and
+`air_softmodem_adapt_get` gives what runs: the tone notched, the center tap, counters.
+
+On a modeled channel (`airSoftmodemTest`, YSF's profile, 8 kHz tap): with the upper band cut to 2.4 kHz, as a
+repeater's chain does, and noise, the symbol errors fall from 3.07 % to 0.02 % with the equalizer (2.2 kHz: 8.6 % to
+1.2 %); with a 127.3 Hz tone of 0.4 of a level under a noisy signal, from 0.62 % to 0.29 % once the tone is notched.
+
 ## 7. The session
 
 `air_session` runs one mode on one provider. Two tasks use it:

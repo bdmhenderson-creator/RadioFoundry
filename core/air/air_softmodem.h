@@ -16,6 +16,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "config.h"
 #include "../../hal/hal_air.h"
 #include "../../hal/hal_baseband.h"
 
@@ -25,6 +26,48 @@
 #define AIR_SOFTMODEM_TAPS	8			// interpolator taps per phase (input samples of history)
 
 typedef void (*air_softmodem_out_t)(const air_chunk_t *c, void *ctx);
+
+#if CONFIG_AIR_RX_ADAPT
+// The adaptive receive options (air_profile_t.rx_opts, docs/spec/air-interface.md 6.1). Their state is memory the
+// mode's engine lends for its session (air_softmodem_lend): about 1.2 KB, none for the modes that don't ask
+#define AIR_ADAPT_EQ_TAPS	7			// a symbol apart, centered on the symbol
+#define AIR_ADAPT_TONES		50			// the standard CTCSS tones
+#define AIR_ADAPT_PERIOD_MAX	480			// a tone search's frame: the profile's sync spacing, up to this
+
+typedef struct {
+	uint8_t opts;				// the profile's options this session runs (AIR_RX_*)
+	// The equalizer: taps x 16384, the oldest symbol first; the symbols before this one, the newest first
+	int16_t eq_w[AIR_ADAPT_EQ_TAPS];
+	int16_t eq_past[AIR_ADAPT_EQ_TAPS / 2];
+	// The tone search: each symbol's slicing error less the one a frame before at the same place, into a Goertzel
+	// filter per tone over blocks of four frames
+	uint16_t period, at, n;
+	int8_t hist[AIR_ADAPT_PERIOD_MAX];
+	int32_t s1[AIR_ADAPT_TONES], s2[AIR_ADAPT_TONES];
+	int16_t coef[AIR_ADAPT_TONES];		// 2 cos(2 pi f / symbol rate) x 4096
+	uint16_t gain[AIR_ADAPT_TONES];		// the frame difference's power gain at the tone, x 4096
+	uint8_t cand;				// the last block's winner, waiting for a second block (0xFF none)
+	uint8_t sel;				// the tone notched (0xFF none)
+	// The notch on the input samples: b0 b1 b2 a1 a2 x 2^28, its state
+	int32_t nb0, nb1, na1, na2;
+	int32_t x1, x2, y1, y2;
+} air_softmodem_adapt_t;
+
+// What they do now, for the debug link (any task reads it; the modem writes it)
+typedef struct {
+	uint8_t opts;				// running: AIR_RX_* of the session less the bench's
+	uint16_t tone_dhz;			// the tone notched, Hz x 10, 0 none
+	int16_t eq_center;			// the equalizer's center tap x 16384
+	uint16_t eq_resets, tone_blocks, tone_picks;
+} air_softmodem_adapt_view_t;
+
+// The memory a session's options run in, from the engine that opens it (NULL after it closes): lent before the
+// provider opens the session, taken back after it closes
+void air_softmodem_lend(air_softmodem_adapt_t *a);
+// Bench A/B (debug link): AIR_RX_* turned off from the next symbol, whatever a profile asks
+extern volatile uint8_t air_softmodem_adapt_off;
+void air_softmodem_adapt_get(air_softmodem_adapt_view_t *out);
+#endif
 
 // The receiver's state: the caller's memory (a provider with no RAM to spare lays it over buffers its idle DMR
 // engine does not use during a session). About 380 bytes
@@ -86,6 +129,9 @@ typedef struct {
 	uint8_t flags;
 	uint32_t t_chunk_us;
 	int8_t soft[AIR_SOFTMODEM_CHUNK];	// (the hard symbols are sliced from these when the chunk goes out)
+#if CONFIG_AIR_RX_ADAPT
+	air_softmodem_adapt_t *ad;		// the options' state, NULL: the plain receiver
+#endif
 } air_softmodem_t;
 
 // What receive through this tap gives a profile: AIR_FIT_RX | AIR_FIT_SOFT, or 0 when the tap's band or rate can't
