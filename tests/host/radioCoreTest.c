@@ -1875,6 +1875,10 @@ static void test_tone_lists(void)
 static int16_t burst_rssi = -85;	// what the simulated modem reports per burst (0 = it doesn't)
 static bool rssi_alt;			// the fake radio's reading alternates strong / floor every 30 ms (TDMA)
 
+// A test's microphone (NULL: silence) and what it hears, block by block, where it looks
+static void (*mic_gen)(int16_t *mic);
+static void (*spk_tap)(const int16_t *spk);
+
 static void run(uint32_t ms)
 {
 	for (uint32_t t = 0; t < ms; t += 5) {
@@ -1889,9 +1893,15 @@ static void run(uint32_t ms)
 #endif
 		}
 		if (aud.feed && aud.started && aud.cb != NULL && now % 20 == 0) {
-			static const int16_t mic[AUDIO_BLOCK_SAMPLES];
+			int16_t mic[AUDIO_BLOCK_SAMPLES] = { 0 };
 			int16_t spk[AUDIO_BLOCK_SAMPLES];
+			if (mic_gen != NULL) {
+				mic_gen(mic);
+			}
 			aud.cb(mic, spk, aud.ctx);
+			if (spk_tap != NULL) {
+				spk_tap(spk);
+			}
 		}
 		if (now % RADIO_TICK_MS == 0) {
 			radio_sm_tick(&sm, now);
@@ -9547,19 +9557,50 @@ static void test_nxdn(void)
 static ysf_engine_t yfar;
 static bool yfar_running, yfar_tx;
 static uint8_t yfar_next;
+#if CONFIG_YSF_VW
+#include "mbe/imbe.h"
+#include "radio/mic_gain.h"
+// The far radio sends VW: these frames in turn (a reference encoder's, test_ysf_vw); what it hears of ours
+#define VW_FAR_MAX	80
+static bool yfar_vw;
+static uint8_t vw_far[VW_FAR_MAX][IMBE_BYTES];
+static uint16_t vw_far_n, vw_far_next;
+static uint8_t vw_heard[200][IMBE_BYTES];
+static uint16_t vw_nheard;
+static uint8_t vw_heard_errs;
+static void yf_rx_fr(const uint8_t fr[YSF_VW_BYTES], uint8_t errs, void *ctx)
+{
+	(void)ctx;
+	if (vw_nheard < 200)
+		memcpy(vw_heard[vw_nheard++], fr, IMBE_BYTES);
+	vw_heard_errs |= errs;
+}
+#endif
 
-static bool yf_tx(uint8_t v[YSF_VOICE_BYTES], void *ctx)
+static bool yf_tx(uint8_t *v, void *ctx)
 {
 	uint8_t bits[VOCODER_BITS];
 
 	(void)ctx;
+#if CONFIG_YSF_VW
+	if (yfar_vw) {
+		if (vw_far_next >= vw_far_n)
+			return false;
+		memcpy(v, vw_far[vw_far_next++], IMBE_BYTES);
+		return true;
+	}
+#endif
 	for (uint8_t i = 0; i < VOCODER_BITS; i++)
 		bits[i] = (uint8_t)((((uint32_t)yfar_next * 2654435761u) >> (i % 29)) & 1u);
 	yfar_next++;
 	ambeFecEncode(bits, v);
 	return true;
 }
+#if CONFIG_YSF_VW
+static const ysf_engine_hooks_t yfar_hooks = { .tx_voice = yf_tx, .rx_voice_fr = yf_rx_fr };
+#else
 static const ysf_engine_hooks_t yfar_hooks = { .tx_voice = yf_tx };
+#endif
 
 static void yfar_step(void)
 {
@@ -9576,6 +9617,12 @@ static void yfar_begin(uint8_t dgid)
 	strcpy(c.tx.callsign, "N1ABC");
 	strcpy(c.tx.radio_id, "AB123");
 	c.tx.dgid = dgid;
+#if CONFIG_YSF_VW
+	if (yfar_vw) {
+		c.tx.vw = true;
+		c.silence = imbe_silence;
+	}
+#endif
 	if (yfar_running)
 		ysf_engine_end(&yfar);
 	yfar_tx = false;
@@ -9686,6 +9733,214 @@ static void test_ysf_wx(void)
 	req(RREQ_RELOAD, 0);
 	run(50);
 }
+
+#if CONFIG_YSF_VW
+// ---- VW in the radio core (ysf.md 10.3): a VW over between two DN overs plays through P25's full-rate path,
+// exactly the reference decoder's samples, on the vocoder's lent block taken once; DN before and after plays on the
+// DMR path and takes nothing; a channel set to VW sends what the full-rate encoder makes of the mic ----
+static uint32_t vw_dn_decodes;
+static void vw_count_decode(const uint8_t *bits) { (void)bits; vw_dn_decodes++; }
+
+// What the speaker played during the over, block by block
+#define VW_SPK_MAX	200
+static int16_t vw_spk[VW_SPK_MAX][AUDIO_BLOCK_SAMPLES];
+static uint16_t vw_nspk;
+static void vw_spk_tap(const int16_t *spk)
+{
+	if (vw_nspk < VW_SPK_MAX)
+		memcpy(vw_spk[vw_nspk++], spk, sizeof vw_spk[0]);
+}
+
+// A microphone whose pitch moves block by block, so every frame differs; each block is kept to replay
+#define VW_MIC_MAX	400
+static int16_t vw_mic[VW_MIC_MAX][AUDIO_BLOCK_SAMPLES];
+static uint16_t vw_nmic;
+static void vw_mic_block(uint16_t k, int16_t *mic)
+{
+	static const int16_t sine[16] = { 0, 3062, 5657, 7391, 8000, 7391, 5657, 3062, 0, -3062, -5657, -7391, -8000,
+					  -7391, -5657, -3062 };
+	uint32_t step = 2u + (k % 7u);		// 1000 to 3500 Hz in 500 Hz steps
+
+	for (int i = 0; i < AUDIO_BLOCK_SAMPLES; i++)
+		mic[i] = sine[((uint32_t)i * step) & 15u];
+}
+static void vw_mic_gen(int16_t *mic)
+{
+	vw_mic_block(vw_nmic, mic);
+	if (vw_nmic < VW_MIC_MAX)
+		memcpy(vw_mic[vw_nmic++], mic, sizeof vw_mic[0]);
+}
+
+// The reference codec, on memory of its own as p25Voice.c lays it out
+static p25_voice_mem_t vw_ref;
+static imbe_mem_t vw_ref_dec;
+static imbe_enc_mem_t vw_ref_enc;
+static void vw_ref_init(void)
+{
+	vw_ref_dec = (imbe_mem_t){ &vw_ref.st, &vw_ref.pr, { &vw_ref.ms, &vw_ref.prev, &vw_ref.cur, vw_ref.buf } };
+	vw_ref_enc = (imbe_enc_mem_t){ &vw_ref.st.q, &vw_ref.est, &vw_ref.pr, vw_ref.buf };
+}
+
+static void vw_far_over(uint32_t ms)
+{
+	CHECK(ysf_engine_tx_prepare(&yfar) && ysf_engine_tx_go(&yfar));
+	yfar_tx = true;
+	run(ms);
+	ysf_engine_tx_stop(&yfar);
+	for (int i = 0; i < 100 && yfar_tx; i++) {
+		run(10);
+		yfar_step();
+	}
+	run(1000);
+}
+
+static void test_ysf_vw(void)
+{
+	radio_ysf_stats_t st;
+	p25_voice_stats_t ps;
+	int16_t pcm[AUDIO_BLOCK_SAMPLES];
+
+	setup_codeplug();
+	add(3, "YSF rptr", 446100000, RADIO_MODE_DMR, false, 2);
+	chans[3].kind = CODEPLUG_KIND_YSF;
+	chans[3].system = 0xFF;
+	stored_ysf[3] = (ysf_chan_t){ .tx_dgid = 0, .rx_dgid = 0 };
+	air_nofit = false;
+	memset(fair, 0, sizeof(fair));
+	start();
+	aud.feed = true;
+	codec_present = true;
+	req(RREQ_ZONE_POS, 2);
+	run(200);
+	CHECK(sm.view.ch.mode == RADIO_MODE_YSF && radio_ysf_running() && ambeVoiceStreaming());
+	radio_ysf_reset_stats();
+	p25VoiceResetStats();
+	v_decode_hook = vw_count_decode;
+	vw_dn_decodes = 0;
+	uint32_t lends0 = lends;
+
+	// The far radio's VW frames: the reference encoder's of the moving tone, and what its decoder makes of them
+	vw_ref_init();
+	imbe_enc_init(&vw_ref_enc);
+	for (vw_far_n = 0; vw_far_n < VW_FAR_MAX; vw_far_n++) {
+		int16_t mic[AUDIO_BLOCK_SAMPLES];
+
+		vw_mic_block(vw_far_n, mic);
+		imbe_enc_frame(&vw_ref_enc, mic, vw_far[vw_far_n]);
+	}
+
+	// DN: the DMR path, nothing lent
+	yfar_vw = false;
+	yfar_begin(0);
+	vw_far_over(1000);
+	CHECK(vw_dn_decodes > 30 && lends == lends0);
+	radio_ysf_stats(&st);
+	CHECK(st.vw_overs == 0 && !p25VoiceStreaming());
+
+	// VW: played on P25's path from the vocoder's block, which is given back after the over played out
+	uint32_t dn0 = vw_dn_decodes;
+
+	yfar_vw = true;
+	vw_far_next = 0;
+	yfar_begin(0);
+	vw_nspk = 0;
+	spk_tap = vw_spk_tap;
+	vw_far_over(1500);
+	spk_tap = NULL;
+	radio_ysf_stats(&st);
+	p25VoiceGetStats(&ps);
+	CHECK(st.vw_overs == 1 && st.vw_dropped == 0 && st.vw_no_mem == 0);
+	CHECK(lends == lends0 + LENDS);
+	CHECK(vw_dn_decodes == dn0);			// the DMR vocoder was not called while it lent its block
+	// (the frames played: every one sent, and the silence frames the far engine ended its last frame with)
+	CHECK(ps.rx_frames >= vw_far_next && vw_far_next >= 60 && ps.rx_bad == 0 && ps.rx_concealed == 0 &&
+	      ps.rx_underruns == 0);
+	CHECK(ambeVoiceStreaming() && !p25VoiceStreaming() && aud.cb == ambeVoiceAudioBlock);
+	CHECK(sm.view.ysf.src[0] != '\0' && (sm.view.ysf.flags & RADIO_YSF_NOT_DN) == 0);
+	// Exactly the reference decoder's output for the frames sent, block for block, from the block the first played
+	static int16_t ref_pcm[VW_FAR_MAX][AUDIO_BLOCK_SAMPLES];
+	uint16_t at = 0, same = 0;
+
+	imbe_dec_init(&vw_ref_dec);
+	for (uint16_t i = 0; i < vw_far_next; i++)
+		imbe_dec_frame(&vw_ref_dec, vw_far[i], 0, ref_pcm[i]);
+	while (at < vw_nspk && memcmp(vw_spk[at], ref_pcm[0], sizeof pcm))
+		at++;
+	for (uint16_t i = 0; i < vw_far_next && at + i < vw_nspk; i++)
+		same += memcmp(vw_spk[at + i], ref_pcm[i], sizeof pcm) == 0;
+	CHECK(at < 40 && same == vw_far_next);
+
+	// DN after it: the DMR path again, nothing more lent
+	yfar_vw = false;
+	yfar_begin(0);
+	vw_far_over(1000);
+	CHECK(vw_dn_decodes > dn0 + 30 && lends == lends0 + LENDS);
+
+	// Sent: a channel whose voice byte says VW. The far radio hears full-rate frames, exactly what the reference
+	// encoder makes of the mic from the block the transmission started at
+	stored_ysf[3].vw = true;
+	start();
+	aud.feed = true;
+	req(RREQ_ZONE_POS, 2);
+	run(200);
+	CHECK(radio_ysf_running());
+	yfar_vw = false;
+	yfar_begin(0);
+	vw_nheard = 0;
+	vw_heard_errs = 0;
+	vw_nmic = 0;
+	mic_gen = vw_mic_gen;
+	radio_set_mic_gain(MIC_GAIN_UNITY);	// (an earlier test's step stays: the reference encoder takes the mic as is)
+	lends0 = lends;
+	req(RREQ_PTT, 1);
+	run(1200);
+	req(RREQ_PTT, 0);
+	for (int i = 0; i < 200 && sm.view.state == RS_TX; i++)
+		run(10);
+	run(500);
+	mic_gen = NULL;
+	CHECK(sm.view.state != RS_TX && !hw.keyed && lends == lends0 + LENDS);
+	CHECK(yfar.rx.stats.calls >= 1 && yfar.rx.call.dt == YSF_DT_VW && !strcmp(yfar.rx.call.src, "N0CALL"));
+	CHECK(vw_nheard >= 40 && vw_heard_errs == 0);
+	CHECK(ambeVoiceStreaming() && !p25VoiceStreaming());
+	// The heard frames, the silence the engine sent before the encoder's first left out, against the reference
+	// encoder started at each of the first blocks the mic gave: one start matches every frame
+	uint16_t h0 = 0;
+	bool match = false;
+
+	while (h0 < vw_nheard && !memcmp(vw_heard[h0], imbe_silence, IMBE_BYTES))
+		h0++;
+	// (frames the encoder made before the engine took any may be dropped: the first heard is found among its output)
+	static uint8_t ref_fr[VW_MIC_MAX][IMBE_BYTES];
+	uint16_t run_len = 0;
+
+	for (uint16_t s0 = 0; s0 < 20 && !match; s0++) {
+		uint16_t n = 0, m = 0, k = h0;
+
+		imbe_enc_init(&vw_ref_enc);
+		for (uint16_t b = s0; b < vw_nmic; b++)
+			imbe_enc_frame(&vw_ref_enc, vw_mic[b], ref_fr[n++]);
+		while (m < n && m < 20 && memcmp(ref_fr[m], vw_heard[h0], IMBE_BYTES))
+			m++;
+		while (m < n && k < vw_nheard && !memcmp(ref_fr[m], vw_heard[k], IMBE_BYTES))
+			m++, k++;
+		run_len = (uint16_t)(k - h0);
+		// every frame heard up to the silence the end of the over filled its last frame with
+		while (k < vw_nheard && !memcmp(vw_heard[k], imbe_silence, IMBE_BYTES))
+			k++;
+		match = k == vw_nheard && run_len >= 40;
+	}
+	CHECK(match);
+
+	v_decode_hook = NULL;
+	yfar_vw = false;
+	yfar_stop();
+	stored_ysf[3].vw = false;
+	setup_codeplug();
+	req(RREQ_RELOAD, 0);
+	run(50);
+}
+#endif
 
 #if CONFIG_SCAN && CONFIG_DUAL_WATCH
 // A watch of channels 3 (YSF) and other, nothing on the air, for ms: how many looks each got and that no two
@@ -12177,6 +12432,9 @@ int main(void)
 #endif
 #if CONFIG_YSF
 	test_ysf_wx();
+#if CONFIG_YSF_VW
+	test_ysf_vw();
+#endif
 #if CONFIG_SCAN && CONFIG_DUAL_WATCH
 	test_ysf_dual();
 #endif

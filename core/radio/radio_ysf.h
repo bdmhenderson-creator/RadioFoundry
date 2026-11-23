@@ -38,7 +38,7 @@ typedef struct {
 #define RADIO_YSF_RX		0x02u	// a call is being received
 #define RADIO_YSF_PLAYED	0x04u	// ... and passes the DG-ID (its voice plays)
 #define RADIO_YSF_LATE		0x08u	// ... was entered without its header
-#define RADIO_YSF_NOT_DN	0x10u	// ... is not DN voice (VW or data: shown, not played)
+#define RADIO_YSF_NOT_DN	0x10u	// ... is no voice this build plays (data, or VW without CONFIG_YSF_VW: shown)
 #define RADIO_YSF_NO_CALL	0x20u	// we have no callsign: PTT refused
 #define RADIO_YSF_RID_WEAK	0x40u	// our RID comes from the fallback, not the MCU's unique ID
 #define RADIO_YSF_DATA		0x80u	// the call heard is a data transmission (room data): no voice
@@ -59,6 +59,9 @@ typedef struct {
 	radio_air_counts_t air;		// rx_calls, tx_calls, tx_filler; the session's rx_chunks, tx_underruns, tx_syms
 	uint32_t frames, fich_fail, csd_fail, dch_fail, voice, voice_held, fec_bits, vch_fixed;	// the call layer's
 	uint32_t begins, begin_fails;
+	// VW (CONFIG_YSF_VW): overs that took the full-rate path, frames dropped while the path was switching, and
+	// switches refused for want of the vocoder's block. The path's own counters are P25 voice's (p25VoiceGetStats)
+	uint32_t vw_overs, vw_dropped, vw_no_mem;
 } radio_ysf_stats_t;
 
 #if CONFIG_YSF

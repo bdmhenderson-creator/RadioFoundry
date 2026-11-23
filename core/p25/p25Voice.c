@@ -373,6 +373,13 @@ bool p25VoiceStreaming(void)
 	return streaming;
 }
 
+bool p25VoicePlaying(void)
+{
+	// A call the callback hasn't taken up yet, or one it still plays (cb_live drops once its queue ran out after its
+	// end, or when it ended before anything played)
+	return LOAD(mem) != NULL && (LOAD(rx_seq) != LOAD(cb_seq) || LOAD(cb_live));
+}
+
 void p25VoiceSetMixer(p25_voice_mixer_t m)
 {
 	STORE(mixer, m);

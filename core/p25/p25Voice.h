@@ -94,6 +94,9 @@ void p25VoiceSetMicGain(uint8_t step);
 void p25VoiceEnd(void);
 // Whether the voice stream runs (its callback owns hal_audio_t). Radio task only
 bool p25VoiceStreaming(void);
+// Whether a call is still queued or playing out: the callback has not reached its end. YSF VW, which borrows this
+// voice path for one over, gives it back only after its last frames played (radio_ysf.c). Radio task
+bool p25VoicePlaying(void);
 // Something else to hear while the stream runs (beeps), as ambeVoiceSetMixer
 typedef bool (*p25_voice_mixer_t)(int16_t *spk);
 void p25VoiceSetMixer(p25_voice_mixer_t mixer);

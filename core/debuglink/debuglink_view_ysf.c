@@ -49,6 +49,10 @@ void debuglink_view_ysf(const radio_view_t *v, dl_text_t *t)
 	dl_text(t, "ysf.voice_held=%u\nysf.fec_bits=%u\nysf.vch_fixed=%u\nysf.rx_chunks=%u\n", (unsigned)c.voice_held,
 		(unsigned)c.fec_bits, (unsigned)c.vch_fixed, (unsigned)c.air.rx_chunks);
 	dl_text(t, "ysf.tx_underruns=%u\nysf.tx_syms=%u\n", (unsigned)c.air.tx_underruns, (unsigned)c.air.tx_syms);
+	// VW (ysf.md 10.3): built, overs played or sent on P25's full-rate path (its counters: the p25 view's voice
+	// ones), frames dropped while the audio changed hands, the vocoder's block refused
+	dl_text(t, "ysf.vw_built=%u\nysf.vw_overs=%u\nysf.vw_dropped=%u\nysf.vw_no_mem=%u\n", CONFIG_YSF_VW,
+		(unsigned)c.vw_overs, (unsigned)c.vw_dropped, (unsigned)c.vw_no_mem);
 	// Rooms (ysf.md 9): what was asked (wx_asked counts commands sent), the node's last reply (wx_serial counts
 	// them), the page of rooms held
 	radio_ysf_wx_t w;

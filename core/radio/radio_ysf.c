@@ -14,6 +14,9 @@
 #include "codeplug/codeplug_modes.h"
 #include "dmr/ambe/ambeVoice.h"
 #include "dmr/call/dmr_call.h"
+#if CONFIG_YSF_VW
+#include "p25/p25Voice.h"
+#endif
 
 // The voice frame YSF hands on is the one the DMR side's voice path takes and gives (ysf.h)
 _Static_assert(YSF_VOICE_BYTES == DMR_AMBE_FRAME_BYTES, "one voice frame size");
@@ -159,13 +162,207 @@ static void params(const channel_t *ch, uint16_t number, const char *radio_name,
 	radio_ysf_callsign(radio_name, c->tx.callsign);
 	radio_ysf_rid(c->tx.radio_id, &weak);
 	c->tx_inhibit = c->tx.callsign[0] == '\0';
+#if CONFIG_YSF_VW
+	// A stored channel set to VW (its voice byte, ysf-codeplug.md 2) sends it; the VFO and a channel in YSF for now
+	// send DN
+	c->tx.vw = number != 0 && ysf_chan_load(number, ch, &yc) && yc.vw;
+	if (c->tx.vw)
+		c->silence = imbe_silence;
+#endif
 }
 
-// ── Voice: the DMR side's voice path (ambeVoice.h), as radio_nxdn.c uses it ──
+// ── Voice: DN through the DMR side's voice path (ambeVoice.h), as radio_nxdn.c uses it ──
+#if !CONFIG_YSF_VW
 static void v_start(const ysf_call_t *c, void *ctx) { (void)c; (void)ctx; radio_air_voice_rx_start(); }
 static void v_voice(const uint8_t v[YSF_VOICE_BYTES], void *ctx) { (void)ctx; radio_air_voice_rx_frame(v); }
 static void v_end(void *ctx) { (void)ctx; radio_air_voice_rx_end(); }
-static bool v_tx(uint8_t v[YSF_VOICE_BYTES], void *ctx) { (void)ctx; return radio_air_voice_tx_next(v); }
+static bool v_tx(uint8_t *v, void *ctx) { (void)ctx; return radio_air_voice_tx_next(v); }
+#define v_update	NULL
+#define v_voice_fr	NULL
+#else
+// ── ... and VW through P25's full-rate voice path (p25Voice.h, core/mbe), ysf.md 10.3 ──
+// One over is DN or VW. DN plays on the DMR vocoder, so the full-rate codec's memory can be that vocoder's lent
+// block (hal_vocoder_t.lend) for as long as a VW over plays or is sent, and VW costs no RAM of its own: the radio
+// task stops the DMR voice path, takes the block and starts P25's on it when a VW over comes, and gives it back once
+// the over has played out, before the DMR path (and with it the vocoder, which rebuilds its state after a lend) runs
+// again. Only one path owns the audio at a time: `fr_on` says which.
+//
+// The engine's hooks run in the provider's task, the switch in the radio task. Neither waits for the other: each
+// says it is in and looks for the other (as radio_p25.c's follower does). The provider's hook that finds the radio
+// task switching drops its frame (the decoder conceals one); the radio task that finds a hook running tries at its
+// next tick. A frame for the path that is off is dropped too: the switch follows within a tick, and a VW over's
+// header comes 100 ms before its first voice
+static volatile uint8_t fr_on;			// the full-rate path owns the audio: radio task writes
+static volatile uint8_t in_hook, in_switch;
+static bool rx_fr;				// the call the hooks have is VW (provider's task)
+static bool tx_fr;				// a VW transmission is on (radio task)
+#ifndef HAL_VOCODER_LEND_BYTES
+// A vocoder that lends nothing (no platform that runs YSF today): memory of its own
+static p25_voice_mem_t fr_own;
+#endif
+
+static bool enter(volatile uint8_t *mine, const volatile uint8_t *other)
+{
+	*mine = 1;
+	__atomic_signal_fence(__ATOMIC_SEQ_CST);
+	if (*other) {
+		*mine = 0;
+		return false;
+	}
+	return true;
+}
+
+static void leave(volatile uint8_t *mine)
+{
+	__atomic_signal_fence(__ATOMIC_SEQ_CST);
+	*mine = 0;
+}
+
+// The DN hooks reach the DMR path, the VW ones P25's, each only while its path owns the audio (a DN start on the
+// DMR path would start its stream from this task)
+static bool hook_in(bool fr)
+{
+	if (!enter(&in_hook, &in_switch))
+		return false;
+	if ((fr_on != 0) != fr) {
+		leave(&in_hook);
+		return false;
+	}
+	return true;
+}
+
+static void call_end(bool fr)
+{
+	if (!hook_in(fr))
+		return;
+	if (fr)
+		p25VoiceHooks()->rx_end(NULL);
+	else
+		radio_air_voice_rx_end();
+	leave(&in_hook);
+}
+
+static void call_start(const ysf_call_t *c)
+{
+	rx_fr = c->dt == YSF_DT_VW;
+	if (!hook_in(rx_fr))
+		return;
+	if (rx_fr)
+		p25VoiceHooks()->rx_start(NULL, NULL);
+	else
+		radio_air_voice_rx_start();
+	leave(&in_hook);
+}
+
+static void v_start(const ysf_call_t *c, void *ctx) { (void)ctx; call_start(c); }
+
+// A call that turns out DN or VW after it started (a late entry's first frames lost): the other path from here
+static void v_update(const ysf_call_t *c, void *ctx)
+{
+	(void)ctx;
+	if ((c->dt == YSF_DT_VW) != rx_fr && (c->dt == YSF_DT_VW || c->dt == YSF_DT_VD2)) {
+		call_end(rx_fr);
+		call_start(c);
+	}
+}
+
+static void v_voice(const uint8_t v[YSF_VOICE_BYTES], void *ctx)
+{
+	(void)ctx;
+	if (hook_in(false)) {
+		radio_air_voice_rx_frame(v);
+		leave(&in_hook);
+	}
+}
+
+static void v_voice_fr(const uint8_t fr[YSF_VW_BYTES], uint8_t errs, void *ctx)
+{
+	(void)ctx;
+	if (!hook_in(true)) {
+		stats.vw_dropped++;
+		return;
+	}
+	p25VoiceHooks()->rx_voice(fr, errs, NULL);
+	leave(&in_hook);
+}
+
+static void v_end(void *ctx) { (void)ctx; call_end(rx_fr); }
+
+// The encoder's next frame, from the path of the transmission (the engine sends silence while it has none)
+static bool v_tx(uint8_t *v, void *ctx)
+{
+	bool fr = eng->tx.id.vw, got = false;
+
+	(void)ctx;
+	if (hook_in(fr)) {
+		got = fr ? p25VoiceHooks()->tx_voice(v, NULL) : radio_air_voice_tx_next(v);
+		leave(&in_hook);
+	}
+	return got;
+}
+
+static void *fr_mem(void)
+{
+#ifdef HAL_VOCODER_LEND_BYTES
+	_Static_assert(sizeof(p25_voice_mem_t) <= HAL_VOCODER_LEND_BYTES, "VW's codec does not fit the vocoder's block");
+	size_t len = 0;
+	void *m = board.vocoder != NULL && board.vocoder->lend != NULL ? board.vocoder->lend(&len) : NULL;
+
+	if (m == NULL || len < sizeof(p25_voice_mem_t) || ((uintptr_t)m & 7u) != 0)
+		return NULL;
+	return m;
+#else
+	return &fr_own;
+#endif
+}
+
+// Hand the audio to the full-rate path (on) or back to the DMR one. Radio task. False: not now (a hook is running,
+// or no memory), the caller tries again
+static bool fr_switch(bool on)
+{
+	void *m;
+
+	if ((fr_on != 0) == on)
+		return true;
+	if (!enter(&in_switch, &in_hook))
+		return false;
+	if (on) {
+		ambeVoiceStop();		// the vocoder's last call: from here its block is free
+		m = fr_mem();
+		if (m == NULL) {
+			ambeVoiceStart();
+			stats.vw_no_mem++;
+			leave(&in_switch);
+			return false;
+		}
+		p25VoiceBegin(m);
+		fr_on = 1;
+		stats.vw_overs++;
+	} else {
+		fr_on = 0;
+		p25VoiceEnd();			// the stream stopped: the block is the vocoder's again
+		ambeVoiceStart();
+	}
+	leave(&in_switch);
+	return true;
+}
+
+// Every tick while the engine runs: the full-rate path while a VW over is played or sent, and until it played out
+static void fr_poll(const ysf_engine_view_t *ev)
+{
+	bool want;
+
+	if (tx_fr)
+		want = true;
+	else if (ev->rx_active && ev->rx_played)
+		want = ev->rx.dt == YSF_DT_VW;
+	else
+		want = fr_on && p25VoicePlaying();
+	fr_switch(want);
+	if (fr_on)
+		p25VoicePoll();
+}
+#endif
 
 // A node's reply: published for the screens. A list keeps the page asked for as its first entry
 static void v_wx(const ysf_wx_t *w, void *ctx)
@@ -188,7 +385,7 @@ static void v_wx(const ysf_wx_t *w, void *ctx)
 	wx_seq++;
 }
 
-static const ysf_engine_hooks_t voice_hooks = { v_start, NULL, v_voice, v_end, v_tx, v_wx, NULL };
+static const ysf_engine_hooks_t voice_hooks = { v_start, v_update, v_voice, v_end, v_tx, v_wx, v_voice_fr };
 
 bool radio_ysf_wx_arm(uint8_t cmd, uint32_t arg, const char *text)
 {
@@ -263,7 +460,14 @@ void radio_ysf_end(void)
 	wx_seq++;
 	wx_state.rooms = 0;	// the list lived in the engine
 	wx_seq++;
-	ysf_engine_end(eng);
+	ysf_engine_end(eng);		// no hook runs after it
+#if CONFIG_YSF_VW
+	if (fr_on) {
+		fr_on = 0;
+		p25VoiceEnd();
+	}
+	tx_fr = rx_fr = false;
+#endif
 	ambeVoiceStop();
 	eng = NULL;
 }
@@ -321,6 +525,9 @@ bool radio_ysf_poll(radio_ysf_view_t *v)
 	} else {
 		ysf_engine_view(eng, &ev);
 		count(&ev);
+#if CONFIG_YSF_VW
+		fr_poll(&ev);
+#endif
 		memset(&n, 0, sizeof n);
 		n.flags = RADIO_YSF_ON;
 		if (ev.rx_active) {
@@ -329,7 +536,7 @@ bool radio_ysf_poll(radio_ysf_view_t *v)
 				n.flags |= RADIO_YSF_PLAYED;
 			if (ev.rx.late)
 				n.flags |= RADIO_YSF_LATE;
-			if (ev.rx.dt != YSF_DT_VD2)
+			if (ev.rx.dt != YSF_DT_VD2 && !(CONFIG_YSF_VW && ev.rx.dt == YSF_DT_VW))
 				n.flags |= RADIO_YSF_NOT_DN;
 			if (ev.rx.dt == YSF_DT_DATA)
 				n.flags |= RADIO_YSF_DATA;
@@ -376,10 +583,40 @@ static bool ysf_tx_prepare(void)
 		wx_seq++;
 		return true;
 	}
+#if CONFIG_YSF_VW
+	// The transmission's voice path owns the audio before the engine asks for its first frame
+	tx_fr = eng->cfg.tx.vw;
+	if (!fr_switch(tx_fr)) {
+		tx_fr = false;
+		return false;
+	}
+	if (!ysf_engine_tx_prepare(eng)) {
+		tx_fr = false;
+		return false;
+	}
+	if (tx_fr)
+		p25VoiceTx(true);
+	else
+		radio_air_voice_tx(true);
+	return true;
+#else
 	if (!ysf_engine_tx_prepare(eng))
 		return false;
 	radio_air_voice_tx(true);
 	return true;
+#endif
+}
+
+// The encoder stops: the operator let go, or the transmission ended
+static void voice_tx_off(void)
+{
+#if CONFIG_YSF_VW
+	if (tx_fr) {
+		p25VoiceTx(false);
+		return;
+	}
+#endif
+	radio_air_voice_tx(false);
 }
 
 static bool ysf_tx_go(void)
@@ -390,7 +627,7 @@ static bool ysf_tx_go(void)
 static void ysf_tx_stop(void)
 {
 	if (eng != NULL) {
-		radio_air_voice_tx(false);
+		voice_tx_off();
 		ysf_engine_tx_stop(eng);
 	}
 }
@@ -398,8 +635,11 @@ static void ysf_tx_stop(void)
 static void ysf_tx_abort(void)
 {
 	if (eng != NULL) {
-		radio_air_voice_tx(false);
+		voice_tx_off();
 		ysf_engine_tx_abort(eng);
+#if CONFIG_YSF_VW
+		tx_fr = false;		// fr_poll gives the audio back
+#endif
 	}
 }
 
@@ -411,8 +651,11 @@ static uint8_t ysf_tx_state(void)
 static void ysf_tx_clear(void)
 {
 	if (eng != NULL) {
-		radio_air_voice_tx(false);
+		voice_tx_off();
 		ysf_engine_tx_clear(eng);
+#if CONFIG_YSF_VW
+		tx_fr = false;
+#endif
 	}
 }
 
