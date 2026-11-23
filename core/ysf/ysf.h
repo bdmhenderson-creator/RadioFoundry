@@ -155,14 +155,16 @@ typedef struct {
 	void (*end)(void *ctx);
 	// A room reply heard (a data transmission, ysf.md 9): valid during the call. NULL: data is ignored
 	void (*wx)(const ysf_wx_t *w, void *ctx);
+	// A VW call's full-rate frame and its corrections (ysf_vw_get), CONFIG_YSF_VW. NULL: VW is shown, not played
+	void (*voice_fr)(const uint8_t fr[YSF_VW_BYTES], uint8_t errs, void *ctx);
 } ysf_call_sink_t;
 
 typedef struct {
 	uint32_t calls, frames, fich_fail, csd_fail, dch_fail;
-	uint32_t voice;		// VCH handed on
+	uint32_t voice;		// VCH (or VW frames) handed on
 	uint32_t voice_held;	// VCH of another data type
 	uint32_t fec_bits;	// bits the FICH, CSD and DCH decoders corrected
-	uint32_t vch_fixed;	// VCH bits the vote corrected
+	uint32_t vch_fixed;	// VCH bits the vote corrected; a VW frame's, its code words
 	uint32_t data_frames, wx_replies;	// frames of data transmissions; room replies parsed from them
 } ysf_call_stats_t;
 
@@ -173,6 +175,7 @@ typedef struct {
 	bool active;
 	ysf_call_t call;
 	uint8_t next_fn;		// the FN a frame placed without its FICH takes
+	bool vw_csd3;			// the next frame is a VW header's CSD3 frame (ysf.md 10.2): placed without its FICH too
 	ysf_call_stats_t stats;
 	ysf_wx_rx_t wx;			// a data transmission being received
 } ysf_call_rx_t;
@@ -185,6 +188,7 @@ typedef struct {
 	char radio_id[YSF_ID_LEN + 1];
 	uint8_t dgid;
 	uint8_t mr;			// YSF_MR_xxx
+	bool vw;			// voice at full rate (VW, CONFIG_YSF_VW) instead of DN
 } ysf_tx_id_t;
 
 // Transmit: a call's frames, built one at a time and released as they fill (nxdn.h has the same shape). ready:
@@ -192,7 +196,7 @@ typedef struct {
 typedef struct {
 	uint8_t state;
 	bool ending;
-	uint8_t fn;			// of the communications frame in hand
+	uint8_t fn;			// of the communications frame in hand; VW: 0, 1, then 2 for every later one
 	uint8_t nvoice;			// VCH filled in it
 	uint16_t nsyms, ready, sent, pre_left;
 	ysf_tx_id_t id;
@@ -211,11 +215,12 @@ uint16_t ysf_call_tx_ready(const ysf_call_tx_t *t, uint16_t *first);
 const uint8_t *ysf_call_tx_syms(const ysf_call_tx_t *t);
 void ysf_call_tx_sent(ysf_call_tx_t *t, uint16_t n);
 bool ysf_call_tx_wants_voice(const ysf_call_tx_t *t);
-// v: a voice frame of the DMR side's voice path. False when the call takes none now
-bool ysf_call_tx_voice(ysf_call_tx_t *t, const uint8_t v[YSF_VOICE_BYTES]);
+// v: a voice frame of the DMR side's voice path (YSF_VOICE_BYTES), or with id.vw a full-rate frame (YSF_VW_BYTES).
+// False when the call takes none now
+bool ysf_call_tx_voice(ysf_call_tx_t *t, const uint8_t *v);
 // The operator let go: the frame in hand is filled with silence (one without voice yet is dropped), then the
-// terminator
-void ysf_call_tx_end(ysf_call_tx_t *t, const uint8_t silence[YSF_VOICE_BYTES]);
+// terminator. silence: a voice frame as ysf_call_tx_voice takes
+void ysf_call_tx_end(ysf_call_tx_t *t, const uint8_t *silence);
 bool ysf_call_tx_done(const ysf_call_tx_t *t);
 
 // The DCH a DN transmission sends at FN 0..6 (docs/spec/ysf.md 4), and the header's two long channels

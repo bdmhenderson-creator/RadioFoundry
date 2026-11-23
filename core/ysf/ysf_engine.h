@@ -19,17 +19,20 @@ typedef struct {
 	void (*rx_voice)(const uint8_t v[YSF_VOICE_BYTES], void *ctx);
 	void (*rx_end)(void *ctx);
 	// Transmit, from the provider's task: the next voice frame, false when none is ready. NULL: every frame is
-	// `silence`
-	bool (*tx_voice)(uint8_t v[YSF_VOICE_BYTES], void *ctx);
+	// `silence`. With cfg.tx.vw a full-rate frame (YSF_VW_BYTES), else a DMR voice path frame (YSF_VOICE_BYTES)
+	bool (*tx_voice)(uint8_t *v, void *ctx);
 	// A room reply heard, from the provider's task (ysf.md 9.3)
 	void (*rx_wx)(const ysf_wx_t *w, void *ctx);
+	// A VW call's full-rate frame and its corrections (ysf_vw_get), from the provider's task (CONFIG_YSF_VW). NULL:
+	// VW calls are shown and not played, as without CONFIG_YSF_VW
+	void (*rx_voice_fr)(const uint8_t fr[YSF_VW_BYTES], uint8_t errs, void *ctx);
 } ysf_engine_hooks_t;
 
 typedef struct {
 	uint8_t rx_dgid;	// YSF_DGID_ALL: every call; else only calls with this DG-ID
 	ysf_tx_id_t tx;		// what we send: callsign, radio ID, DG-ID, route
 	bool tx_inhibit;	// no callsign: PTT refused
-	const uint8_t *silence;	// a voice frame of silence (YSF_VOICE_BYTES), from the vocoder
+	const uint8_t *silence;	// a voice frame of silence as tx_voice gives them (DN's from the vocoder, VW's full-rate)
 } ysf_engine_cfg_t;
 
 typedef struct {

@@ -79,7 +79,7 @@ static void on_voice(const uint8_t v[YSF_VOICE_BYTES], void *ctx)
 }
 static void on_end(void *ctx) { (void)ctx; printf("{\"ev\":\"call_end\"}\n"); }
 
-static const ysf_call_sink_t sink = { on_start, on_update, on_voice, on_end, NULL };
+static const ysf_call_sink_t sink = { on_start, on_update, on_voice, on_end, NULL, NULL };
 
 static int cmd_decode(const char *in, int unpacked)
 {

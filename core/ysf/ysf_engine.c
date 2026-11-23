@@ -6,7 +6,10 @@
 #include <stddef.h>
 #include <string.h>
 
-_Static_assert(YSF_VOICE_BYTES <= AIR_VOICE_FRAME_MAX, "a voice frame fits air_voice's");
+#include "../config.h"
+
+_Static_assert(YSF_VOICE_BYTES <= AIR_VOICE_FRAME_MAX && YSF_VW_BYTES <= AIR_VOICE_FRAME_MAX,
+	       "a voice frame fits air_voice's");
 
 uint32_t ysf_engine_fit(const hal_air_t *air)
 {
@@ -14,10 +17,12 @@ uint32_t ysf_engine_fit(const hal_air_t *air)
 }
 
 // ── Receive (provider's task) ──
-// DN voice whose DG-ID is ours, or every call with ours at 0 (ysf.md 5.1)
+// DN voice whose DG-ID is ours, or every call with ours at 0 (ysf.md 5.1); VW too where it can be played (10.3)
 static bool wanted(const ysf_engine_t *e, const ysf_call_t *c)
 {
-	return c->dt == YSF_DT_VD2 && (e->cfg.rx_dgid == YSF_DGID_ALL || c->dgid == e->cfg.rx_dgid);
+	bool voice = c->dt == YSF_DT_VD2 || (CONFIG_YSF_VW && c->dt == YSF_DT_VW && e->hooks.rx_voice_fr != NULL);
+
+	return voice && (e->cfg.rx_dgid == YSF_DGID_ALL || c->dgid == e->cfg.rx_dgid);
 }
 
 static void notify(ysf_engine_t *e, const ysf_call_t *c, air_voice_event_t ev)
@@ -55,6 +60,16 @@ static void on_voice(const uint8_t v[YSF_VOICE_BYTES], void *ctx)
 		e->hooks.rx_voice(v, e->ctx);
 }
 
+static void on_voice_fr(const uint8_t fr[YSF_VW_BYTES], uint8_t errs, void *ctx)
+{
+	ysf_engine_t *e = ctx;
+
+	if (air_voice_recheck_due(&e->av))
+		rx_fields(e, &e->rx.call, false);
+	if (air_voice_rx_voice(&e->av))
+		e->hooks.rx_voice_fr(fr, errs, e->ctx);	// (wanted: set, or the call doesn't play)
+}
+
 static void on_end(void *ctx)
 {
 	ysf_engine_t *e = ctx;
@@ -70,7 +85,8 @@ static void on_wx(const ysf_wx_t *w, void *ctx)
 		e->hooks.rx_wx(w, e->ctx);
 }
 
-static const ysf_call_sink_t sink = { on_start, on_update, on_voice, on_end, on_wx };
+// (voice_fr NULL without CONFIG_YSF_VW: the call layer then counts VW's frames as held, as DN-only builds do)
+static const ysf_call_sink_t sink = { on_start, on_update, on_voice, on_end, on_wx, CONFIG_YSF_VW ? on_voice_fr : NULL };
 
 // ── Transmit: the call layer behind air_voice's tx_fill ──
 static uint16_t t_ready(void *t, uint16_t *first) { return ysf_call_tx_ready(t, first); }

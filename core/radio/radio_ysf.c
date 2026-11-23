@@ -188,7 +188,7 @@ static void v_wx(const ysf_wx_t *w, void *ctx)
 	wx_seq++;
 }
 
-static const ysf_engine_hooks_t voice_hooks = { v_start, NULL, v_voice, v_end, v_tx, v_wx };
+static const ysf_engine_hooks_t voice_hooks = { v_start, NULL, v_voice, v_end, v_tx, v_wx, NULL };
 
 bool radio_ysf_wx_arm(uint8_t cmd, uint32_t arg, const char *text)
 {

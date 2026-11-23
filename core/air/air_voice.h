@@ -12,7 +12,7 @@
 #include <stdint.h>
 #include "air_session.h"
 
-#define AIR_VOICE_FRAME_MAX	9	// the largest voice frame a protocol hands on (DMR's 72-bit AMBE+2 frame)
+#define AIR_VOICE_FRAME_MAX	11	// the largest voice frame a protocol hands on (YSF VW's 88-bit full-rate frame)
 
 // The protocol's engine as tx_fill drives it. Its air_voice_t is the engine's first member, so eng (the engine) and
 // the air_voice_t are one address; tx: its transmit call layer state. A const table: nothing of it costs RAM

@@ -311,6 +311,9 @@ typedef struct {
 	ysf_call_t call;
 	uint8_t voice[VMAX][YSF_VOICE_BYTES];
 	uint16_t nvoice;
+	uint8_t fr[VMAX][YSF_VW_BYTES];		// VW's full-rate frames
+	uint16_t nfr;
+	uint8_t fr_errs;			// the most corrections one had
 } sink_t;
 
 static void s_start(const ysf_call_t *c, void *ctx) { sink_t *x = ctx; x->starts++; x->call = *c; }
@@ -326,7 +329,16 @@ static void s_voice(const uint8_t v[YSF_VOICE_BYTES], void *ctx)
 static ysf_wx_t wx_got;
 static uint8_t wx_n;
 static void s_wx(const ysf_wx_t *w, void *ctx) { (void)ctx; wx_got = *w; wx_n++; }
-static const ysf_call_sink_t call_sink = { s_start, s_update, s_voice, s_end, s_wx };
+static void s_voice_fr(const uint8_t fr[YSF_VW_BYTES], uint8_t errs, void *ctx)
+{
+	sink_t *x = ctx;
+
+	if (x->nfr < VMAX)
+		memcpy(x->fr[x->nfr++], fr, YSF_VW_BYTES);
+	if ((errs & 15) > x->fr_errs)
+		x->fr_errs = errs & 15;
+}
+static const ysf_call_sink_t call_sink = { s_start, s_update, s_voice, s_end, s_wx, s_voice_fr };
 
 static void voice_frame(uint8_t v[YSF_VOICE_BYTES])
 {
@@ -521,8 +533,9 @@ PROVIDER(1)
 typedef struct {
 	ysf_engine_t e;
 	sink_t s;
-	uint8_t enc[VMAX][YSF_VOICE_BYTES];
+	uint8_t enc[VMAX][AIR_VOICE_FRAME_MAX];
 	uint16_t enc_made, enc_taken;
+	bool vw;			// it sends VW: its encoder makes full-rate frames
 } radio_t;
 static radio_t r[2];
 static uint8_t silence[YSF_VOICE_BYTES];
@@ -531,16 +544,28 @@ static void h_start(const ysf_call_t *c, void *ctx) { s_start(c, &((radio_t *)ct
 static void h_update(const ysf_call_t *c, void *ctx) { s_update(c, &((radio_t *)ctx)->s); }
 static void h_end(void *ctx) { s_end(&((radio_t *)ctx)->s); }
 static void h_voice(const uint8_t v[YSF_VOICE_BYTES], void *ctx) { s_voice(v, &((radio_t *)ctx)->s); }
-static bool h_tx_voice(uint8_t v[YSF_VOICE_BYTES], void *ctx)
+static void h_voice_fr(const uint8_t fr[YSF_VW_BYTES], uint8_t errs, void *ctx) { s_voice_fr(fr, errs, &((radio_t *)ctx)->s); }
+static bool h_tx_voice(uint8_t *v, void *ctx)
 {
 	radio_t *x = ctx;
 
 	if (x->enc_taken == x->enc_made)
 		return false;
-	memcpy(v, x->enc[x->enc_taken++], YSF_VOICE_BYTES);
+	memcpy(v, x->enc[x->enc_taken++], x->vw ? YSF_VW_BYTES : YSF_VOICE_BYTES);
 	return true;
 }
-static const ysf_engine_hooks_t hooks = { h_start, h_update, h_voice, h_end, h_tx_voice, NULL };
+static const ysf_engine_hooks_t hooks = { h_start, h_update, h_voice, h_end, h_tx_voice, NULL, h_voice_fr };
+
+// The encoder's next frame: a DN voice frame, or a full-rate one where the radio sends VW
+static void encode(radio_t *x)
+{
+	if (x->enc_made >= VMAX)
+		return;
+	if (x->vw)
+		full_rate(rng(), x->enc[x->enc_made++]);
+	else
+		voice_frame(x->enc[x->enc_made++]);
+}
 
 static ysf_engine_cfg_t cfg_for(uint8_t i, uint8_t rx_dgid, uint8_t tx_dgid)
 {
@@ -580,8 +605,8 @@ static uint16_t over(uint16_t n_key, uint16_t stall_from, uint16_t stall_to)
 		if (n == n_key)
 			ysf_engine_tx_stop(&r[0].e);
 		if (n < n_key && !(n >= stall_from && n < stall_to)) {
-			for (uint8_t k = (uint8_t)(1 + (n & 1)); k && r[0].enc_made < VMAX; k--)
-				voice_frame(r[0].enc[r[0].enc_made++]);
+			for (uint8_t k = (uint8_t)(1 + (n & 1)); k; k--)
+				encode(&r[0]);
 		}
 		steps(1);
 		if (ysf_engine_tx_state(&r[0].e) == AIR_TX_DONE) {
@@ -717,6 +742,240 @@ static void testEngines(void)
 	c0.tx_inhibit = true;
 	begin(0, &c0);
 	CHECK(!ysf_engine_tx_prepare(&r[0].e), "inhibited: refused");
+	ysf_engine_end(&r[0].e);
+	ysf_engine_end(&r[1].e);
+}
+
+// ── VW through the call layer (ysf.md 10.2): a whole over built by the transmit side, then fed to the framer whole,
+// joined late, and with FICHs lost ──
+#define VW_FRAMES	11	// preamble, header, eight communications frames (2 + 7 x 5 = 37 voice frames), terminator
+#define VW_VOICES	37
+static uint8_t vw_air[VW_FRAMES][YSF_FRAME_BYTES];
+
+static void vw_build(const ysf_tx_id_t *id)
+{
+	static ysf_call_tx_t tx;
+	uint8_t fr[YSF_VW_BYTES], quiet[YSF_VW_BYTES] = { 0 };
+	uint32_t made = 0, total = 0;
+	uint16_t first;
+
+	ysf_call_tx_begin(&tx, id);
+	while (!ysf_call_tx_done(&tx) && total < VW_FRAMES * YSF_FRAME_SYMS) {
+		uint16_t n = ysf_call_tx_ready(&tx, &first);
+
+		if (!n) {
+			if (made < VW_VOICES) {
+				full_rate(made++, fr);
+				CHECK(ysf_call_tx_voice(&tx, fr), "VW voice taken");
+			} else {
+				ysf_call_tx_end(&tx, quiet);
+			}
+			continue;
+		}
+		air_syms_copy((uint8_t *)vw_air, (uint16_t)total, ysf_call_tx_syms(&tx), first, n);
+		ysf_call_tx_sent(&tx, n);
+		total += n;
+	}
+	CHECK(ysf_call_tx_done(&tx) && total == VW_FRAMES * YSF_FRAME_SYMS, "VW over built: %u symbols", (unsigned)total);
+}
+
+// The over from frame `from` on into a fresh receiver; frames in `lose` (a bit mask) arrive with their FICH wiped
+static void vw_hear(ysf_call_rx_t *rx, sink_t *s, uint8_t from, uint16_t lose)
+{
+	static air_framer_t fr;
+	static uint8_t fbuf[YSF_FRAME_BYTES], frame[YSF_FRAME_BYTES];
+	uint8_t chunk[36];
+
+	memset(s, 0, sizeof *s);
+	ysf_call_rx_init(rx, &call_sink, s);
+	air_framer_init(&fr, &ysf_air_mode, &rx->rx, fbuf, NULL, YSF_FRAME_SYMS);
+	for (uint8_t k = from; k < VW_FRAMES; k++) {
+		memcpy(frame, vw_air[k], sizeof frame);
+		if (lose & (1u << k))
+			for (uint16_t i = YSF_FICH_SYM; i < YSF_FICH_SYM + YSF_FICH_SYMS; i += 3)
+				air_sym_put(frame, i, (uint8_t)(air_sym_get(frame, i) ^ 3));
+		for (uint16_t at = 0; at < YSF_FRAME_SYMS; at += 144) {
+			uint16_t n = YSF_FRAME_SYMS - at < 144 ? YSF_FRAME_SYMS - at : 144;
+			air_chunk_t c = { .sync_at = -1, .nsyms = n, .hard = chunk };
+
+			memset(chunk, 0, sizeof chunk);
+			air_syms_copy(chunk, 0, frame, at, n);
+			air_framer_rx(&fr, &c);
+		}
+	}
+	// The air goes quiet after the terminator: a few frames of the preamble's idle pattern
+	memset(frame, 0x77, sizeof frame);
+	for (uint8_t k = 0; k < 2; k++)
+		for (uint16_t at = 0; at < YSF_FRAME_SYMS; at += 144) {
+			air_chunk_t c = { .sync_at = -1, .nsyms = 144, .hard = frame };
+
+			air_framer_rx(&fr, &c);
+		}
+}
+
+// The frames heard are full_rate(first..) in order, none corrected
+static bool vw_heard_in_order(const sink_t *s, uint32_t first, uint16_t n)
+{
+	uint8_t fr[YSF_VW_BYTES];
+
+	if (s->nfr != n || s->fr_errs != 0)
+		return false;
+	for (uint16_t i = 0; i < n; i++) {
+		full_rate(first + i, fr);
+		if (memcmp(s->fr[i], fr, sizeof fr))
+			return false;
+	}
+	return true;
+}
+
+static void testVwCall(void)
+{
+	static ysf_call_rx_t rx;
+	static sink_t s;
+	static const uint8_t csd3[YSF_CSD_BYTES + 1] = "               K7Q2Z";
+	ysf_tx_id_t id = { .callsign = "n0call", .radio_id = "K7Q2Z", .dgid = 12, .vw = true };
+	ysf_fec_work_t w;
+	ysf_fich_t f;
+	uint8_t d[YSF_CSD_BYTES];
+
+	vw_build(&id);
+	// On air: header and terminator FN 0 FT 0 with DT 3; FN 0 and 1 of FT 1, then FN 0 FT 0; CSD3 in the first
+	for (uint8_t k = 1; k < VW_FRAMES; k++) {
+		uint8_t fi = k == 1 ? YSF_FI_HEADER : k == VW_FRAMES - 1 ? YSF_FI_TERM : YSF_FI_COMMS;
+		uint8_t fn = k == 3, ft = k == 2 || k == 3;
+
+		CHECK(ysf_fich_get(vw_air[k], NULL, &w, &f) == 0 && f.fi == fi && f.dt == YSF_DT_VW && f.fn == fn &&
+		      f.ft == ft && f.dgid == 12, "VW frame %u: FI %u DT %u FN %u FT %u", k, f.fi, f.dt, f.fn, f.ft);
+	}
+	CHECK(ysf_csd3_get(vw_air[2], NULL, &w, d) == 0 && !memcmp(d, csd3, YSF_CSD_BYTES), "CSD3: our radio ID last");
+	CHECK(ysf_csd_get(vw_air[1], NULL, 0, &w, d) == 0 && !memcmp(d, "*****K7Q2ZN0CALL    ", 20), "header CSD1 as DN's");
+
+	// Whole: one call from its header, every frame in order, no DN voice
+	vw_hear(&rx, &s, 0, 0);
+	CHECK(s.starts == 1 && s.ends == 1 && !s.call.late && s.call.dt == YSF_DT_VW && !strcmp(s.call.src, "N0CALL") &&
+	      !strcmp(s.call.src_id, "K7Q2Z") && s.call.dgid == 12, "VW call: starts %u ends %u dt %u src '%s' id '%s'",
+	      s.starts, s.ends, s.call.dt, s.call.src, s.call.src_id);
+	CHECK(vw_heard_in_order(&s, 0, VW_VOICES) && s.nvoice == 0 && rx.stats.voice == VW_VOICES &&
+	      rx.stats.voice_held == 0, "VW voice: %u frames, %u DN", s.nfr, s.nvoice);
+	CHECK(rx.stats.fich_fail == 0 && rx.stats.csd_fail == 0 && rx.stats.dch_fail == 0, "VW: no channel failed");
+
+	// Joined at the CSD3 frame: the caller's radio ID from it, no callsign (VW carries none outside the header)
+	vw_hear(&rx, &s, 2, 0);
+	CHECK(s.starts == 1 && s.call.late && !strcmp(s.call.src_id, "K7Q2Z") && s.call.src[0] == '\0' &&
+	      vw_heard_in_order(&s, 0, VW_VOICES), "VW late: late %u id '%s' frames %u", s.call.late, s.call.src_id, s.nfr);
+	// Joined after it: the voice from there, no radio ID
+	vw_hear(&rx, &s, 3, 0);
+	CHECK(s.starts == 1 && s.call.late && s.call.src_id[0] == '\0' && vw_heard_in_order(&s, 2, VW_VOICES - 2),
+	      "VW joined after CSD3: id '%s' frames %u", s.call.src_id, s.nfr);
+
+	// The CSD3 frame's FICH lost: placed as the frame after the header, CSD3 still read and only its last two blocks
+	// taken as voice; a later frame's lost too: all five of its blocks are voice
+	vw_hear(&rx, &s, 0, (1u << 2) | (1u << 6));
+	CHECK(rx.stats.fich_fail == 2 && s.starts == 1 && !strcmp(s.call.src_id, "K7Q2Z") &&
+	      vw_heard_in_order(&s, 0, VW_VOICES) && rx.stats.csd_fail == 0, "VW, FICH lost: fails %u frames %u",
+	      rx.stats.fich_fail, s.nfr);
+
+	// A sink without full-rate voice (a build that can't play VW): the call is seen, its frames held
+	static const ysf_call_sink_t dn_only = { s_start, s_update, s_voice, s_end, s_wx, NULL };
+	static air_framer_t fr;
+	static uint8_t fbuf[YSF_FRAME_BYTES];
+
+	memset(&s, 0, sizeof s);
+	ysf_call_rx_init(&rx, &dn_only, &s);
+	air_framer_init(&fr, &ysf_air_mode, &rx.rx, fbuf, NULL, YSF_FRAME_SYMS);
+	for (uint8_t k = 0; k < VW_FRAMES; k++) {
+		air_chunk_t c = { .sync_at = -1, .nsyms = YSF_FRAME_SYMS, .hard = vw_air[k] };
+
+		air_framer_rx(&fr, &c);
+	}
+	CHECK(s.starts == 1 && s.nfr == 0 && s.nvoice == 0 && rx.stats.voice == 0 && rx.stats.voice_held > 0,
+	      "VW without a full-rate sink: held %u", rx.stats.voice_held);
+}
+
+// ── VW between two engines: sent, heard in order, the encoder stalling; DN on the same engines after it unchanged; an
+// engine without a full-rate hook shows VW and plays nothing ──
+static uint8_t vw_silence[YSF_VW_BYTES] = { 0xD8, 0x5A };
+
+static uint16_t check_order_fr(const radio_t *rx, const radio_t *tx, uint16_t *first)
+{
+	uint16_t bad = 0, k = 0, i = 0;
+
+	while (i < rx->s.nfr && !memcmp(rx->s.fr[i], vw_silence, YSF_VW_BYTES))
+		i++;
+	while (k < tx->enc_made && i < rx->s.nfr && memcmp(rx->s.fr[i], tx->enc[k], YSF_VW_BYTES))
+		k++;
+	*first = k;
+	for (; i < rx->s.nfr; i++) {
+		if (!memcmp(rx->s.fr[i], vw_silence, YSF_VW_BYTES))
+			continue;
+		if (k >= tx->enc_made || memcmp(rx->s.fr[i], tx->enc[k++], YSF_VW_BYTES))
+			bad++;
+	}
+	return bad;
+}
+
+static void testVwEngines(void)
+{
+	ysf_engine_cfg_t c0 = cfg_for(0, 0, 0), c1 = cfg_for(1, 0, 0);
+	ysf_engine_view_t v;
+	uint16_t n, first;
+
+	c0.tx.vw = true;
+	c0.silence = vw_silence;
+	begin(0, &c0);
+	begin(1, &c1);
+	r[0].vw = true;
+	steps(30);
+	n = over(100, 1000, 1000);
+	CHECK(n > 100 && n < 115 && prov[0].underruns == 0, "VW over: ended %u periods after 100, underruns %u", n,
+	      prov[0].underruns);
+	CHECK(r[1].s.starts == 1 && r[1].s.ends == 1 && !strcmp(r[1].s.call.src, "N0CALL") &&
+	      !strcmp(r[1].s.call.src_id, "K7Q2Z") && r[1].s.call.dt == YSF_DT_VW, "VW heard: starts %u src '%s'",
+	      r[1].s.starts, r[1].s.call.src);
+	// (the CSD3 frame carries two voice frames, not five: the last three the encoder made never go)
+	CHECK(check_order_fr(&r[1], &r[0], &first) == 0 && first == 0 && r[1].s.nfr + 3 >= r[0].enc_made &&
+	      r[1].s.nvoice == 0 && r[1].s.fr_errs == 0, "VW voice in order: heard %u made %u first %u", r[1].s.nfr,
+	      r[0].enc_made, first);
+	ysf_engine_view(&r[1].e, &v);
+	CHECK(!v.rx_active && v.rx_calls == 1 && v.rx.dt == YSF_DT_VW, "VW receiver's view");
+
+	// The encoder stalls: the full-rate silence frame covers the gap
+	begin(0, &c0);
+	begin(1, &c1);
+	r[0].vw = true;
+	over(100, 30, 50);
+	ysf_engine_view(&r[0].e, &v);
+	CHECK(prov[0].underruns == 0 && v.tx_filler >= 10 && check_order_fr(&r[1], &r[0], &first) == 0,
+	      "VW stall: underruns %u filler %u", prov[0].underruns, v.tx_filler);
+
+	// DN on the same engines right after: heard as before, nothing through the full-rate hook
+	uint16_t nfr = r[1].s.nfr;
+
+	c0 = cfg_for(0, 0, 0);
+	ysf_engine_set(&r[0].e, &c0);
+	r[0].vw = false;
+	r[0].enc_made = r[0].enc_taken = 0;
+	r[1].s.starts = r[1].s.ends = 0;
+	r[1].s.nvoice = 0;
+	over(100, 1000, 1000);
+	CHECK(r[1].s.starts == 1 && r[1].s.call.dt == YSF_DT_VD2 && r[1].s.nfr == nfr &&
+	      check_order(&r[1], &r[0], &first) == 0 && r[1].s.nvoice >= r[0].enc_made, "DN after VW: %u frames",
+	      r[1].s.nvoice);
+
+	// No full-rate hook: VW seen, not played
+	static const ysf_engine_hooks_t dn_hooks = { h_start, h_update, h_voice, h_end, h_tx_voice, NULL, NULL };
+
+	c0 = cfg_for(0, 0, 0);
+	c0.tx.vw = true;
+	c0.silence = vw_silence;
+	begin(0, &c0);
+	r[0].vw = true;
+	memset(&r[1], 0, sizeof r[1]);
+	CHECK(ysf_engine_begin(&r[1].e, &air1, &c1, &dn_hooks, &r[1]), "radio 1 without VW");
+	over(60, 1000, 1000);
+	ysf_engine_view(&r[1].e, &v);
+	CHECK(r[1].s.starts == 0 && r[1].s.nfr == 0 && v.rx_calls == 1 && v.rx.dt == YSF_DT_VW,
+	      "VW to an engine that can't play it: seen, not played");
 	ysf_engine_end(&r[0].e);
 	ysf_engine_end(&r[1].e);
 }
@@ -988,6 +1247,8 @@ int main(void)
 	testVwFec();
 	testCallThroughFramer();
 	testEngines();
+	testVwCall();
+	testVwEngines();
 	testRooms();
 	printf("# ysfTest %s (%d checks, %d failures)\n", failures ? "FAILED" : "PASSED", checks, failures);
 	return failures != 0;
