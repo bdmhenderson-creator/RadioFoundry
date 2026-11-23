@@ -251,14 +251,13 @@ static int64_t cos_turn(uint32_t ph)
 		sign = -1;
 	}
 	t = (int64_t)ph * 102944;		// radians x 2^30: 2 pi x 2^30 / 65536
-	t2 = (t * t) >> 30;
-	c = Q30 - t2 / 2;
-	t = (t2 * t2) >> 30;			// x^4
-	c += t / 24;
-	t = (t * t2) >> 30;			// x^6
-	c -= t / 720;
-	t = (t * t2) >> 30;			// x^8
-	c += t / 40320;
+	t2 = (t * t) >> 30;			// x^2 <= (pi/2)^2 x 2^30
+	// Horner: 1 - x^2/2 (1 - x^2/12 (1 - x^2/30 (1 - x^2/56))). Each factor stays below 2^30, so no product
+	// passes 2^62 (x^4 times x^2 on its own would overflow near a quarter turn)
+	c = Q30 - t2 / 56;
+	c = Q30 - ((t2 * c) >> 30) / 30;
+	c = Q30 - ((t2 * c) >> 30) / 12;
+	c = Q30 - ((t2 * c) >> 30) / 2;
 	return sign * c;
 }
 
