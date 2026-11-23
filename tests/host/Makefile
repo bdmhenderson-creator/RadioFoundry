@@ -1900,9 +1900,9 @@ run-mbe-halves: fxpHalvesTest fxpHalvesSplitTest mbeExactTest mbeExactSplitTest
 # D-STAR DV (core/dstar, docs/spec/dstar-modem.md): the header coding against tools/dstar_ref.py's vectors, the soft
 # Viterbi decoder, slow data, whole transmissions through the deframer
 TESTS   += dstarTest
-DSTARFR := $(CORE)/dstar/dstar_fec.c $(CORE)/dstar/dstar_frame.c
+DSTARFR := $(CORE)/dstar/dstar_fec.c $(CORE)/dstar/dstar_frame.c $(CORE)/fec/conv.c
 
-dstarTest: dstarTest.c $(DSTARFR) $(wildcard $(CORE)/dstar/*.h) ../vectors/dstar.txt
+dstarTest: dstarTest.c $(DSTARFR) $(wildcard $(CORE)/dstar/*.h) $(CORE)/fec/conv.h ../vectors/dstar.txt
 	$(CC) $(CFLAGS) -I. -Wshadow -o $@ dstarTest.c $(DSTARFR)
 
 # The GMSK modem on a simulated radio link (noise, offset, clock error, high-passed paths) and the engine
