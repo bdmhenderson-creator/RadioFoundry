@@ -287,6 +287,8 @@ static void adapt_reset(air_softmodem_adapt_t *a)
 	memset(a->s1, 0, sizeof a->s1);
 	memset(a->s2, 0, sizeof a->s2);
 	a->at = a->n = 0;
+	a->ci1 = a->ci2 = a->cc1 = a->cc2 = 0;
+	a->dn = 0;
 	a->cand = a->sel = TONE_NONE;
 	a->x1 = a->x2 = a->y1 = a->y2 = 0;
 	adapt_view.tone_dhz = 0;
@@ -309,11 +311,19 @@ static void adapt_open(air_softmodem_t *m)
 	if (!a->period)
 		a->opts &= (uint8_t)~AIR_RX_TONE;	// no frame to difference against
 	for (uint8_t k = 0; k < AIR_ADAPT_TONES; k++) {
-		int64_t c = cos_turn(turn_of(tone_dhz[k], m->p->sym_rate, 1));
+		int64_t c = cos_turn(turn_of(tone_dhz[k], m->p->sym_rate, AIR_ADAPT_DECIM));
 		int64_t cp = cos_turn(turn_of(tone_dhz[k], m->p->sym_rate, a->period));
+		int64_t gd = (2 * Q30 - 2 * cp + (1 << 17)) >> 18;		// the frame difference's, x 4096
+		int64_t gs = AIR_ADAPT_DECIM * Q30;				// the sum's, |sum of e^-jwn|^2 x 2^30
 
-		a->coef[k] = (int16_t)((2 * c + (1 << 17)) >> 18);			// x 4096
-		a->gain[k] = (uint16_t)((2 * Q30 - 2 * cp + (1 << 17)) >> 18);
+		for (uint8_t j = 1; j < AIR_ADAPT_DECIM; j++)
+			gs += 2 * (AIR_ADAPT_DECIM - j) * cos_turn(turn_of(tone_dhz[k], m->p->sym_rate, j));
+		gs /= AIR_ADAPT_DECIM * AIR_ADAPT_DECIM;			// x 2^30, 1 at DC
+		gs = (gs * gs) >> 30;						// the CIC is two such sums
+		a->coef[k] = (int16_t)((2 * c + (1 << 17)) >> 18);		// x 4096
+		// A tone the frame difference all but cancels isn't sought; the CIC's droop toward the high tones is
+		// weighed in, so the tones compete on what the signal holds
+		a->gain[k] = gd < TONE_GAIN_MIN ? 0 : (uint16_t)((gd * gs + (1 << 29)) >> 30 ?: 1);
 	}
 	adapt_reset(a);
 	m->ad = a;
@@ -346,7 +356,7 @@ static void tone_block(air_softmodem_t *m)
 		int64_t s1 = a->s1[k], s2 = a->s2[k];
 		int64_t pw = s1 * s1 + s2 * s2 - ((a->coef[k] * s1) >> 12) * s2;
 
-		p[k] = a->gain[k] >= TONE_GAIN_MIN && pw > 0 ? (pw << 12) / a->gain[k] : -1;
+		p[k] = a->gain[k] && pw > 0 ? (pw << 12) / a->gain[k] : -1;
 		if (p[k] >= 0 && (best == TONE_NONE || p[k] > p[best]))
 			best = k;
 		a->s1[k] = a->s2[k] = 0;
@@ -392,7 +402,11 @@ static void tone_block(air_softmodem_t *m)
 }
 
 // One symbol's slicing error into the search, a frame's worth behind it differenced away (what repeats every frame,
-// as a transmission of silence does, is a comb at the frame rate, not a tone)
+// as a transmission of silence does, is a comb at the frame rate, not a tone). The differences go through a
+// second-order CIC (two sums of AIR_ADAPT_DECIM symbols, one output each AIR_ADAPT_DECIM): CTCSS tones stay under
+// 254 Hz, so the filters run at a quarter of the symbol rate (1200 Hz at 4800 symbols/s), 50 updates every 4 symbols
+// instead of every symbol. What folds onto the tones then comes from above 940 Hz, where the CIC holds it off by
+// more than 20 dB (at 600 Hz the fold sits next to the high tones and the noise picked tones there)
 static void tone_symbol(air_softmodem_t *m, int32_t err)
 {
 	air_softmodem_adapt_t *a = m->ad;
@@ -400,11 +414,22 @@ static void tone_symbol(air_softmodem_t *m, int32_t err)
 
 	a->hist[a->at] = (int8_t)e;
 	a->at = (uint16_t)(a->at + 1 == a->period ? 0 : a->at + 1);
-	for (uint8_t k = 0; k < AIR_ADAPT_TONES; k++) {
-		int32_t s0 = x + ((a->coef[k] * a->s1[k]) >> 12) - a->s2[k];
+	a->ci1 += (uint32_t)x;
+	a->ci2 += a->ci1;
+	if (++a->dn >= AIR_ADAPT_DECIM) {
+		// The integrators wrap; the combs' differences are exact all the same: |d| <= 127 x 4 x 4
+		uint32_t c1 = a->ci2 - a->cc1;
+		int32_t d = (int32_t)(c1 - a->cc2);
 
-		a->s2[k] = a->s1[k];
-		a->s1[k] = s0;
+		a->cc1 = a->ci2;
+		a->cc2 = c1;
+		a->dn = 0;
+		for (uint8_t k = 0; k < AIR_ADAPT_TONES; k++) {
+			int32_t s0 = d + ((a->coef[k] * a->s1[k]) >> 12) - a->s2[k];
+
+			a->s2[k] = a->s1[k];
+			a->s1[k] = s0;
+		}
 	}
 	if (++a->n >= TONE_BLOCK * a->period) {
 		a->n = 0;

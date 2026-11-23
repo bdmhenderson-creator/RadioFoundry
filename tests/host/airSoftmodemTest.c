@@ -787,6 +787,20 @@ static void testAdapt(void)
 	       v.tone_dhz / 10, v.tone_dhz % 10);
 	CHECK(v.tone_dhz == 1273 && v.tone_picks >= 1, "tone found: %u", v.tone_dhz);
 	CHECK(e0 > 0.005 && e1 < e0 * 0.6, "tone notched: %.4f against %.4f", e1, e0);
+	// The band's edges and a neighbor pair through the search's decimating CIC, each found as itself; 69.3 Hz sits on
+	// the frame rate's 7th harmonic, which the frame difference cancels: not sought (0)
+	{
+		static const struct { double hz; uint16_t dhz; } t[] = { { 67.0, 670 }, { 71.9, 719 }, { 74.4, 744 },
+									 { 254.1, 2541 }, { 69.3, 0 } };
+
+		for (unsigned i = 0; i < sizeof t / sizeof t[0]; i++) {
+			sample_tap(8000, 17, 3600, 2000, 300, 450);
+			add_tone(t[i].hz, 0.4 * 1800);
+			run_adapt(&tone, true, &ns1);
+			air_softmodem_adapt_get(&v);
+			CHECK(v.tone_dhz == t[i].dhz, "%.1f Hz tone: found %u", t[i].hz, v.tone_dhz);
+		}
+	}
 
 	// No tone: none picked, however long (and the same data again and again, as silence repeats, picks none)
 	sample_tap(8000, 17, 3600, 2000, 300, 300);

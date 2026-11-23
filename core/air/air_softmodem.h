@@ -33,19 +33,22 @@ typedef void (*air_softmodem_out_t)(const air_chunk_t *c, void *ctx);
 #define AIR_ADAPT_EQ_TAPS	7			// a symbol apart, centered on the symbol
 #define AIR_ADAPT_TONES		50			// the standard CTCSS tones
 #define AIR_ADAPT_PERIOD_MAX	480			// a tone search's frame: the profile's sync spacing, up to this
+#define AIR_ADAPT_DECIM		4			// symbols per tone filter step: 1200 Hz at 4800 symbols/s
 
 typedef struct {
 	uint8_t opts;				// the profile's options this session runs (AIR_RX_*)
 	// The equalizer: taps x 16384, the oldest symbol first; the symbols before this one, the newest first
 	int16_t eq_w[AIR_ADAPT_EQ_TAPS];
 	int16_t eq_past[AIR_ADAPT_EQ_TAPS / 2];
-	// The tone search: each symbol's slicing error less the one a frame before at the same place, into a Goertzel
-	// filter per tone over blocks of four frames
+	// The tone search: each symbol's slicing error less the one a frame before at the same place, through a
+	// second-order CIC that keeps one in AIR_ADAPT_DECIM, into a Goertzel filter per tone over blocks of four frames
 	uint16_t period, at, n;
 	int8_t hist[AIR_ADAPT_PERIOD_MAX];
+	uint32_t ci1, ci2, cc1, cc2;		// the CIC's integrators (each symbol) and combs (each output), modulo 2^32
+	uint8_t dn;				// symbols since its last output
 	int32_t s1[AIR_ADAPT_TONES], s2[AIR_ADAPT_TONES];
-	int16_t coef[AIR_ADAPT_TONES];		// 2 cos(2 pi f / symbol rate) x 4096
-	uint16_t gain[AIR_ADAPT_TONES];		// the frame difference's power gain at the tone, x 4096
+	int16_t coef[AIR_ADAPT_TONES];		// 2 cos(2 pi f / the summed rate) x 4096
+	uint16_t gain[AIR_ADAPT_TONES];		// the difference's and the sum's power gain at the tone, x 4096; 0: not sought
 	uint8_t cand;				// the last block's winner, waiting for a second block (0xFF none)
 	uint8_t sel;				// the tone notched (0xFF none)
 	// The notch on the input samples: b0 b1 b2 a1 a2 x 2^28, its state
