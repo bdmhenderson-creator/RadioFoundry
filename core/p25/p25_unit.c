@@ -344,14 +344,17 @@ uint16_t p25_ldu_voice_sym(uint8_t n)
 	return (uint16_t)(k + k / SS_EVERY);
 }
 
-int p25_ldu_voice_get(const uint8_t *unit, uint8_t n, uint8_t imbe[P25_IMBE_BYTES])
+// The 144-bit code word of one full-rate frame, its bits in air order, the first in bit 7 of code[0]. YSF's VW frames
+// carry the same code word (ysf.h), so it is worked on a plain buffer and the LDU's own layout (status symbols between
+// the bits) stays in the two LDU functions below
+int p25_voice_decode(const uint8_t code[P25_VOICE_CODE_BYTES], uint8_t imbe[P25_IMBE_BYTES])
 {
 	uint32_t c[8] = { 0 }, m[8];
-	uint16_t u[8], at = VOICE_AT[n], o = 0;
+	uint16_t u[8], o = 0;
 	int errs, e0, e4 = 0;
 
 	for (uint8_t i = 0; i < 144; i++)
-		c[VOICE_MAP[i] >> 5] |= p25_bits_get(unit, (uint16_t)(at + i), 1) << (VOICE_MAP[i] & 31);
+		c[VOICE_MAP[i] >> 5] |= (uint32_t)((code[i >> 3] >> (7 - (i & 7))) & 1) << (VOICE_MAP[i] & 31);
 	// u_0 first: the masks of the other words come from it
 	errs = e0 = fec_golay23_decode(c[0], &u[0]);
 	voice_masks(u[0], m);
@@ -377,10 +380,10 @@ int p25_ldu_voice_get(const uint8_t *unit, uint8_t n, uint8_t imbe[P25_IMBE_BYTE
 	return P25_VOICE_ERRS(errs, e0, e4);
 }
 
-void p25_ldu_voice_put(uint8_t *unit, uint8_t n, const uint8_t imbe[P25_IMBE_BYTES])
+void p25_voice_encode(const uint8_t imbe[P25_IMBE_BYTES], uint8_t code[P25_VOICE_CODE_BYTES])
 {
 	uint32_t c[8], m[8];
-	uint16_t u[8], at = VOICE_AT[n], o = 0;
+	uint16_t u[8], o = 0;
 
 	for (uint8_t k = 0; k < 8; k++) {
 		uint8_t len = k < 4 ? 12 : k < 7 ? 11 : 7;
@@ -396,8 +399,27 @@ void p25_ldu_voice_put(uint8_t *unit, uint8_t n, const uint8_t imbe[P25_IMBE_BYT
 	for (uint8_t k = 4; k < 7; k++)
 		c[k] = fec_hamming15_encode(u[k]) ^ m[k];
 	c[7] = u[7];
+	memset(code, 0, P25_VOICE_CODE_BYTES);
 	for (uint8_t i = 0; i < 144; i++)
-		p25_bits_put(unit, (uint16_t)(at + i), 1, (c[VOICE_MAP[i] >> 5] >> (VOICE_MAP[i] & 31)) & 1);
+		code[i >> 3] |= (uint8_t)(((c[VOICE_MAP[i] >> 5] >> (VOICE_MAP[i] & 31)) & 1) << (7 - (i & 7)));
+}
+
+int p25_ldu_voice_get(const uint8_t *unit, uint8_t n, uint8_t imbe[P25_IMBE_BYTES])
+{
+	uint8_t code[P25_VOICE_CODE_BYTES] = { 0 };
+
+	for (uint8_t i = 0; i < 144; i++)
+		code[i >> 3] |= (uint8_t)(p25_bits_get(unit, (uint16_t)(VOICE_AT[n] + i), 1) << (7 - (i & 7)));
+	return p25_voice_decode(code, imbe);
+}
+
+void p25_ldu_voice_put(uint8_t *unit, uint8_t n, const uint8_t imbe[P25_IMBE_BYTES])
+{
+	uint8_t code[P25_VOICE_CODE_BYTES];
+
+	p25_voice_encode(imbe, code);
+	for (uint8_t i = 0; i < 144; i++)
+		p25_bits_put(unit, (uint16_t)(VOICE_AT[n] + i), 1, (code[i >> 3] >> (7 - (i & 7))) & 1);
 }
 
 // ── Link control words (5.5, figure 5-6) ──

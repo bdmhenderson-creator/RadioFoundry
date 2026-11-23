@@ -97,6 +97,11 @@ void p25_tdulc_put(uint8_t *unit, const uint8_t lc[P25_LC_BYTES]);
 #define P25_VOICE_ERRS_BAD(e)	(P25_VOICE_ERRS_C0(e) >= 2 && P25_VOICE_ERRS_TOTAL(e) >= 11)
 int p25_ldu_voice_get(const uint8_t *unit, uint8_t n, uint8_t imbe[P25_IMBE_BYTES]);
 void p25_ldu_voice_put(uint8_t *unit, uint8_t n, const uint8_t imbe[P25_IMBE_BYTES]);
+// The same code word on a plain buffer, the 144 bits in air order from bit 7 of code[0]: what YSF's VW frames carry
+// (core/ysf, docs/spec/ysf.md 10)
+#define P25_VOICE_CODE_BYTES	18
+int p25_voice_decode(const uint8_t code[P25_VOICE_CODE_BYTES], uint8_t imbe[P25_IMBE_BYTES]);
+void p25_voice_encode(const uint8_t imbe[P25_IMBE_BYTES], uint8_t code[P25_VOICE_CODE_BYTES]);
 
 // The symbol of an LDU where voice frame n starts; P25_LDU_SYMS for n = 9. Everything before it is in the unit
 // once frames 0..n-1 and the unit's words are: a transmitter can send that far
