@@ -40,15 +40,20 @@ typedef struct {
 	// The equalizer: taps x 16384, the oldest symbol first; the symbols before this one, the newest first
 	int16_t eq_w[AIR_ADAPT_EQ_TAPS];
 	int16_t eq_past[AIR_ADAPT_EQ_TAPS / 2];
-	// The tone search: each symbol's slicing error less the one a frame before at the same place, through a
+	// The tone search: the slicing error of the symbols whose neighborhood differs from the same place a frame
+	// before (what repeats every frame is a comb at the frame rate, not a tone), less its slow mean, through a
 	// second-order CIC that keeps one in AIR_ADAPT_DECIM, into a Goertzel filter per tone over blocks of four frames
 	uint16_t period, at, n;
-	int8_t hist[AIR_ADAPT_PERIOD_MAX];
+	uint8_t hist[AIR_ADAPT_PERIOD_MAX];	// each place's neighborhood a frame before: 3 decided symbols | 0x40
+	uint8_t ctx;				// the last 3 decided symbols, 2 bits each
+	bool e_ok;				// e_prev is a fresh symbol's
+	int8_t e_prev;				// the error of the symbol before (the middle of ctx)
+	int32_t e_mean;				// the errors' slow mean, x 256
 	uint32_t ci1, ci2, cc1, cc2;		// the CIC's integrators (each symbol) and combs (each output), modulo 2^32
 	uint8_t dn;				// symbols since its last output
 	int32_t s1[AIR_ADAPT_TONES], s2[AIR_ADAPT_TONES];
 	int16_t coef[AIR_ADAPT_TONES];		// 2 cos(2 pi f / the summed rate) x 4096
-	uint16_t gain[AIR_ADAPT_TONES];		// the difference's and the sum's power gain at the tone, x 4096; 0: not sought
+	uint16_t gain[AIR_ADAPT_TONES];		// the CIC's power gain at the tone, x 4096
 	uint8_t cand;				// the last block's winner, waiting for a second block (0xFF none)
 	uint8_t sel;				// the tone notched (0xFF none)
 	// The notch on the input samples: b0 b1 b2 a1 a2 x 2^28, its state

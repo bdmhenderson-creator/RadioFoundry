@@ -787,11 +787,12 @@ static void testAdapt(void)
 	       v.tone_dhz / 10, v.tone_dhz % 10);
 	CHECK(v.tone_dhz == 1273 && v.tone_picks >= 1, "tone found: %u", v.tone_dhz);
 	CHECK(e0 > 0.005 && e1 < e0 * 0.6, "tone notched: %.4f against %.4f", e1, e0);
-	// The band's edges and a neighbor pair through the search's decimating CIC, each found as itself; 69.3 Hz sits on
-	// the frame rate's 7th harmonic, which the frame difference cancels: not sought (0)
+	// Tones on or next to a multiple of the 10 Hz frame rate (100.0 Hz is one: what repeats every frame is left out,
+	// not differenced away), close neighbors and the band's edges, each found as itself
 	{
-		static const struct { double hz; uint16_t dhz; } t[] = { { 67.0, 670 }, { 71.9, 719 }, { 74.4, 744 },
-									 { 254.1, 2541 }, { 69.3, 0 } };
+		static const struct { double hz; uint16_t dhz; } t[] = { { 67.0, 670 }, { 69.3, 693 }, { 79.7, 797 },
+			{ 100.0, 1000 }, { 146.2, 1462 }, { 159.8, 1598 }, { 192.8, 1928 }, { 199.5, 1995 }, { 250.3, 2503 },
+			{ 254.1, 2541 } };
 
 		for (unsigned i = 0; i < sizeof t / sizeof t[0]; i++) {
 			sample_tap(8000, 17, 3600, 2000, 300, 450);
@@ -806,7 +807,7 @@ static void testAdapt(void)
 	sample_tap(8000, 17, 3600, 2000, 300, 300);
 	e1 = run_adapt(&both, true, &ns1);
 	air_softmodem_adapt_get(&v);
-	CHECK(v.tone_dhz == 0 && v.tone_picks == 0 && v.tone_blocks >= 4, "no tone: %u picked in %u blocks", v.tone_dhz,
+	CHECK(v.tone_dhz == 0 && v.tone_picks == 0 && v.tone_blocks >= 3, "no tone: %u picked in %u blocks", v.tone_dhz,
 	      v.tone_blocks);
 	for (uint32_t k = 680; k < air_n; k++)
 		air[k] = air[200 + (k - 200) % 480];	// every frame the first one
