@@ -9148,6 +9148,7 @@ static void ysf_wx_request(radio_sm_t *sm, uint32_t now_ms)
 	}
 	air_key(sm, now_ms, sm->view.ch.tx_hz);
 	if (sm->view.state == RS_TX_DENIED && !sm->ptt) {
+		radio_ysf_wx_disarm();		// refused before the engine took it: not the next PTT's
 		sm->view.state = RS_IDLE;	// refused by the engine or the board: nothing to release
 		changed(sm);
 	}
