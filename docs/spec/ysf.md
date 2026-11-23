@@ -23,7 +23,8 @@ State:
 | Codeplug channels, the site's Codeplug Editor ([ysf-codeplug.md](ysf-codeplug.md)) | written, host tested |
 | On air | not checked with this code; see the radio's bring-up record |
 | Rooms: status, connect, disconnect, room list, search (9) | written, host tested |
-| VW (full rate voice), Group Monitor, positions, news, V/D mode 1 | not supported in this first version (8). A VW call shows on Home, not played |
+| VW (Voice FR, full rate voice) with `CONFIG_YSF_VW` (10) | written, host tested: heard and played on every YSF channel, sent on a channel set to VW, through P25's full-rate voice path. Without the switch a VW call shows on Home, not played |
+| Group Monitor, positions, news, V/D mode 1 | not supported in this first version (8) |
 
 ## 1. On air
 
@@ -189,7 +190,7 @@ remarks 3-4, whichever arrives first; five characters that aren't all 0-9 or A-Z
 |---|---|
 | Header | A new call (one already running ends: its terminator was lost); the callsigns from CSD1 |
 | Communications frame, no call | A late entry: the call starts, its fields come from the DCH as the FNs pass |
-| Communications frame | The DG-ID, DT and MR from the FICH; the DCH by FN; five voice frames if DT is 2, else none (shown as not DN voice) |
+| Communications frame | The DG-ID, DT and MR from the FICH; the DCH by FN; five voice frames if DT is 2, VW's full-rate frames if DT is 3 and the build plays them (10.2), else none (shown as not DN voice) |
 | A frame whose FICH fails | Taken as the communications frame due, for up to three in a row: its DCH as the next FN, its voice played |
 | Terminator, or 400 ms without a sync | The call ends |
 
@@ -200,15 +201,15 @@ remarks 3-4, whichever arrives first; five characters that aren't all 0-9 or A-Z
 | Mode | `RADIO_MODE_YSF`, a channel's mode only: the board stays in its digital mode, its DMR stack stopped, as for P25 and NXDN. Offered where the board's air interface fits the profile (`radio_ysf_fits`) |
 | Channels | A stored channel of kind 103 runs in YSF with its own DG-IDs ([ysf-codeplug.md](ysf-codeplug.md)); the VFO and a channel in YSF for now take the RAM settings (DG-ID 0 both ways until the debug link sets others) |
 | Memory | The engine runs in P25's memory where P25's isn't lent to the vocoder, else in one block it shares with NXDN (`radio_air_mem.c`): one air mode runs at a time |
-| PTT | Refused without a callsign (`TXDENY_NO_ID`), without the vocoder (`TXDENY_NO_CODEC`), and where the provider can't transmit the profile |
+| PTT | Refused without a callsign (`TXDENY_NO_ID`), without the vocoder (`TXDENY_NO_CODEC`, also on a VW channel, whose voice doesn't need it: 10.3), and where the provider can't transmit the profile |
 | Scan, dual watch | As NXDN: a stop holds on a call it would play. Dual watch pairs a YSF channel with any other mode's (FM, DMR, P25, NXDN, YSF): one receiver alternates, each look starts that channel's engine or the DMR stack and stops the other first, never two at once (`radioCoreTestAir`); a radio with a second receiver gives it the FM or DMR channel and alternates the main one only between two air channels |
 
 ### 5.1 The DG-ID squelch
 
 | Receive DG-ID | Played |
 |---|---|
-| 0 | every DN call, whatever its DG-ID |
-| 1-99 | DN calls with that DG-ID only; the rest show as "Other DG-ID: not played" |
+| 0 | every DN call (and VW call, 10), whatever its DG-ID |
+| 1-99 | DN and VW calls with that DG-ID only; the rest show as "Other DG-ID: not played" |
 
 PTT sends the transmit DG-ID. A channel stores both; the channel editor sets one value for both.
 
@@ -338,7 +339,6 @@ repeaters with callsign, radio ID and DG-ID, and the room basics (9). Not suppor
 
 | Function | Why |
 |---|---|
-| VW (voice at full rate) | Its full-rate voice is not what the radios' vocoder chips run: they carry DMR's half-rate AMBE+2 only. Shown on Home as "Not DN voice", not played. (The software full-rate decoder P25 uses, `core/mbe`, is a possible way later, not checked against VW) |
 | Group Monitor (GM) | Not written |
 | Positions (GPS) in the frames | Our transmissions carry none |
 | News, voice messages and pictures from a repeater or node | Not written |
@@ -349,7 +349,6 @@ Planned next, once this is in the main line:
 1. Positions from the GPS in the frames sent to a repeater.
 2. Group Monitor.
 3. A repeater's or node's news: voice messages and pictures.
-4. VW, if its voice can be carried (above).
 
 ## 9. Rooms (node commands)
 
@@ -404,3 +403,67 @@ with no buffer for a whole list:
 | State | `radio_ysf_wx`: the last reply's fields, what was asked; `radio_ysf_wx_room`: the page of rooms. The provider's task writes them, the screens read them under a sequence count |
 | Memory | The reply's parser runs in the engine's memory (about 0.7 KB); the published state and page of rooms in the radio core (about 0.6 KB) |
 
+## 10. Voice FR (VW)
+
+VW (FICH DT 3) is YSF's voice at full rate: 7200 bit/s, 88 voice and 56 FEC bits each 20 ms. The radios' vocoder chips
+carry DMR's half-rate AMBE+2 only, so VW plays through the software full-rate codec P25 already has (`core/mbe`) and
+P25's voice path on it. Switch: `CONFIG_YSF_VW`, on with `CONFIG_YSF` where `CONFIG_P25` is built. The layout below was
+read off a Yaesu handheld's VW transmission received on air (every voice frame's code words checked); `ysfTest` builds
+and reads two frames of an independent reference implementation of it bit for bit.
+
+### 10.1 The frame
+
+A VW communications frame's five 72-symbol blocks are five full-rate voice frames, one per 20 ms, each P25 Phase 1's
+144-bit voice code word exactly (TIA-102.BAAA 5.3: u0..u3 in Golay (23,12), u4..u6 in Hamming (15,11), u7 bare, c1..c6
+scrambled from u0, the table 5-1 interleave), with no YSF whitening on top. Each block is byte aligned in the frame, so
+`ysf_vw_put` and `ysf_vw_get` hand the frame's own bytes to `p25_voice_encode` and `p25_voice_decode`. The decoder never
+refuses a frame: it hands the corrections on (`P25_VOICE_ERRS`), and the full-rate decoder repeats or mutes a frame
+whose u0 word took two or more of eleven or more, as on P25.
+
+The first communications frame after the header (FN 0 of FT 1) carries CSD3 in place of its first three voice frames:
+one 20-byte long channel (3.2: whitened, the CRC over the whitened content, the convolutional code, rows of 9) over
+the payload's first 180 symbols straight through, not split per block as a header's CSD1 and CSD2 are; then 36 zero
+symbols; blocks 3 and 4 are voice. CSD3 is remarks 1-4, five characters each; the sender's radio ID is remarks 4.
+
+### 10.2 The transmission and receive
+
+| Frame | FI | FN, FT | Payload |
+|---|---|---|---|
+| Header, terminator | 0, 2 | 0, 0 | CSD1, CSD2 as DN's (4.1), DT 3 |
+| First communications frame | 1 | 0, 1 | CSD3 (our radio ID as remarks 4), two voice frames |
+| Second | 1 | 1, 1 | five voice frames |
+| Every later one | 1 | 0, 0 | five voice frames |
+
+The frame numbers are what the handheld sends. A VW over carries no callsign between its header and terminator, so a
+receiver that joins late names the caller by CSD3's radio ID when it caught that frame, else by nothing until the
+next over. A frame whose FICH is lost is placed as DN's (4.3), but VW's frame numbers mean nothing beyond where CSD3
+is: the frame right after the header is taken as the CSD3 frame, any other as five voice frames (DN's rolling FN count
+would read voice as CSD3). Each voice block is released to the air as it is filled; the CSD3 frame's first three go at
+once.
+
+### 10.3 The radio core
+
+| Item | Rule |
+|---|---|
+| Receive | A VW call passes the DG-ID squelch as a DN call does and plays on every YSF channel; nothing to set |
+| Transmit | A stored channel whose voice byte says VW ([ysf-codeplug.md](ysf-codeplug.md) 2) sends it; the encoder's full-rate frames, the full-rate silence frame when none is ready. The VFO and a channel in YSF for now send DN. The voice byte is set in the Codeplug Editor; the radio has no menu for it yet |
+| Voice path | P25's (`p25Voice.c`): its queue and priming, the full-rate decoder in the audio block callback, its concealment, and its encoder for the mic. Its counters are the `p25` view's voice ones |
+| Memory | The DMR vocoder's lent block (`hal_vocoder_t.lend`) for one over: DN runs on that vocoder and may come at any moment, but one over is DN or VW. When a VW over plays or is sent the radio task stops the DMR voice path (the vocoder's last call), takes the block and starts P25's path on it; once the over has played out (`p25VoicePlaying`) or the transmission is cleared, it ends that path and starts the DMR one again, whose vocoder rebuilds its state after a lend. On a lending platform VW costs no RAM; one that lends nothing keeps a block of its own (no platform that runs YSF today) |
+| The switch | The engine's hooks run in the provider's task and the switch in the radio task: each says it is in and looks for the other. A hook that finds the switch running, or its own path not the one that owns the audio, drops its frame (`ysf.vw_dropped`); a switch that finds a hook running tries at the next tick. A VW header comes 100 ms before its first voice frame, so the switch is done by then |
+| PTT | As DN's (5). The vocoder isn't needed for VW's voice, but PTT still asks for it as on any YSF channel |
+| Home | A VW call shows as a call (`RADIO_YSF_NOT_DN` is set only for what this build doesn't play) |
+| Debug link | `ysf.vw_built`, `ysf.vw_overs` (overs that took the full-rate path), `ysf.vw_dropped`, `ysf.vw_no_mem` (the vocoder's block refused) |
+
+### 10.4 Cost
+
+What it adds to a build that has YSF and P25 is the VW framing, the switch and the codeplug's voice byte: the codec's
+memory is the vocoder's lent block, and the codec and the voice path are P25's. Each radio's figures:
+[feature-matrix.md](../feature-matrix.md).
+
+### 10.5 Tests
+
+| Test | What |
+|---|---|
+| `ysfTest` | Two frames of the reference transmission built and read bit for bit; the code word under single errors and three in u0's word; CSD3 under scattered errors; a whole VW over through the framer: whole, joined at and after the CSD3 frame, FICHs lost, a sink that can't play VW; two engines sending VW to each other, the encoder stalling, then DN on the same engines unchanged |
+| `ysfCodeplugTest` | The voice byte, and a save on the radio keeping it |
+| `radioCoreTestYsfVw`, `radioCoreTestAir` | With and without a lending vocoder: a VW over between two DN overs takes the block once, never calls the DMR vocoder meanwhile, plays the reference decoder's samples block for block, and gives the audio back; PTT on a VW channel sends frame for frame what a reference encoder makes of the mic |
