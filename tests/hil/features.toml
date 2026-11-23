@@ -105,6 +105,14 @@ source = ["core/ysf", "core/air", "core/fec", "core/radio/radio_ysf.c", "core/ra
           "core/radio/radio_air.h", "core/radio/radio_air_mem.c", "core/radio/radio_air_voice.c",
           "core/debuglink/debuglink_view_ysf.c"]
 
+# VW (Voice FR) on YSF channels: heard from another radio and played, sent on a channel whose voice byte says VW
+[feature.ysf_vw]
+switch = "YSF_VW"
+spec = "docs/spec/ysf.md"
+source = ["core/ysf", "core/radio/radio_ysf.c", "core/p25/p25Voice.c", "core/p25/p25_unit.c", "core/mbe"]
+planned_tests = ["tests/hil/test_ysf.py::test_ysf_vw_tx_off_air"]
+manual = "A Yaesu radio set to VW (Voice FR) calls the radio on a YSF channel: the call shows with the caller and plays; then a channel set to VW in the Codeplug Editor calls the Yaesu radio, which plays it"
+
 [feature.dmr_voice]
 switch = "DMR"
 spec = "docs/spec/dmr-voice.md"
