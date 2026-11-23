@@ -12,15 +12,21 @@ const CALL_RE = /^[0-9A-Z/-]{0,10}$/;
 
 // --- Channel (2) ---
 
+// Byte 2 is the voice byte: bit 0 sends VW (full-rate voice) instead of DN, the other bits reserved and kept. A radio
+// writes only the DG-IDs, so this module is the one place that sets it; a block without it is DN
+export const VOICE_VW = 0x01;
+
 export function decodeChan(b) {
 	const tx = u8(b, 0), rx = u8(b, 1);
-	return { txDgid: tx <= DGID_MAX ? tx : 0, rxDgid: rx <= DGID_MAX ? rx : 0 };
+	return { txDgid: tx <= DGID_MAX ? tx : 0, rxDgid: rx <= DGID_MAX ? rx : 0, vw: (u8(b, 2) & VOICE_VW) !== 0 };
 }
 
 export function encodeChan(p, prev = null) {
-	const v = grow(prev, 2);
+	// The voice byte only where VW is set or the block had one: a DN channel keeps the 2-byte block radios write
+	const v = grow(prev, p.vw ? 3 : 2);
 	v[0] = p.txDgid >= 0 && p.txDgid <= DGID_MAX ? p.txDgid : 0;
 	v[1] = p.rxDgid >= 0 && p.rxDgid <= DGID_MAX ? p.rxDgid : 0;
+	if (v.length > 2) v[2] = (v[2] & ~VOICE_VW) | (p.vw ? VOICE_VW : 0);
 	return v;
 }
 
@@ -53,12 +59,13 @@ export const ysfKind = {
 	defaultTx: true,
 	recordFields: [],
 	flags: {},
-	newParams: () => ({ txDgid: 0, rxDgid: 0 }),
+	newParams: () => ({ txDgid: 0, rxDgid: 0, vw: false }),
 	decode: decodeChan,
 	encode: encodeChan,
 	fields: () => [
 		dgidField("txDgid", "editor.ysf.tx_dgid"),
 		dgidField("rxDgid", "editor.ysf.rx_dgid", { help: "editor.ysf.dgid_any" }),
+		{ key: "vw", label: "editor.ysf.vw", type: "bool", help: "editor.ysf.vw_help" },
 	],
 	validate() {},
 	settings: {

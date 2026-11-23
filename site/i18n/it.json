@@ -1939,6 +1939,8 @@
  "editor.ysf.tx_dgid": "DG-ID TX",
  "editor.ysf.rx_dgid": "DG-ID RX",
  "editor.ysf.dgid_any": "DG-ID RX 0 riceve tutti i DG-ID.",
+ "editor.ysf.vw": "Invia VW (voce a piena velocità)",
+ "editor.ysf.vw_help": "Disattivato: il canale invia voce DN. Attivato: invia VW (Voice FR). Una radio compilata senza VW invia DN.",
  "editor.ysf.callsign": "Nominativo YSF",
  "editor.ysf.callsign_help": "Fino a 10 caratteri: lettere, cifre, - e /. Lascia vuoto per usare il nominativo del nome radio. L'ID radio non si imposta qui: ogni radio crea il proprio dal suo chip.",
  "editor.sfr.role": "Ruolo",

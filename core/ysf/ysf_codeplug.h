@@ -12,14 +12,18 @@
 #define YSF_CP_DGID_MAX		99u
 #define YSF_CP_CALL_LEN		10u	// the radio-wide record's callsign field
 
-// A channel's parameter block (2)
+// A channel's parameter block (2). The radio writes its first YSF_CP_CHAN_LEN bytes, the DG-IDs; the voice byte after
+// them is the Codeplug Editor's, and a radio's save keeps it (written over the front of the block, ysf-codeplug.md 2.1)
 #define YSF_CP_CHAN_LEN		2u
+#define YSF_CP_CHAN_VOICE	2u	// offset of the voice byte
+#define YSF_CP_VOICE_VW		0x01u	// send VW (full-rate voice) rather than DN
 typedef struct {
 	uint8_t tx_dgid;	// 0..99
 	uint8_t rx_dgid;	// 0..99; 0 hears every DG-ID
+	bool vw;		// send VW, where the build has it (CONFIG_YSF_VW); not encoded (above)
 } ysf_chan_t;
 
-// Decode len bytes of a block (a short one, or none, takes the defaults: 0 and 0); a value out of range reads as 0
+// Decode len bytes of a block (a short one, or none, takes the defaults: 0, 0 and DN); a value out of range reads as 0
 void ysf_chan_decode(const uint8_t *b, int len, ysf_chan_t *out);
 void ysf_chan_encode(const ysf_chan_t *c, uint8_t out[YSF_CP_CHAN_LEN]);
 

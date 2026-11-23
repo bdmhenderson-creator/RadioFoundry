@@ -13,9 +13,11 @@
 void ysf_chan_decode(const uint8_t *b, int len, ysf_chan_t *out)
 {
 	uint8_t tx = len >= 1 ? b[0] : 0u, rx = len >= 2 ? b[1] : 0u;
+	uint8_t voice = len > (int)YSF_CP_CHAN_VOICE ? b[YSF_CP_CHAN_VOICE] : 0u;
 
 	out->tx_dgid = tx <= YSF_CP_DGID_MAX ? tx : 0u;
 	out->rx_dgid = rx <= YSF_CP_DGID_MAX ? rx : 0u;
+	out->vw = (voice & YSF_CP_VOICE_VW) != 0;	// the other bits reserved: kept, not read
 }
 
 void ysf_chan_encode(const ysf_chan_t *c, uint8_t out[YSF_CP_CHAN_LEN])

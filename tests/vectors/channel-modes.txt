@@ -112,6 +112,14 @@ ysfenc 0 0 0000
 ysfenc 0C 0 0C00
 ysfenc 63 63 6363
 ysfenc 1 2 0102
+# ysfvoice <block> <VW 0|1>: the voice byte (ysf-codeplug.md 2): bit 0 VW, the rest reserved; short blocks are DN
+ysfvoice - 0
+ysfvoice 0000 0
+ysfvoice 000000 0
+ysfvoice 0C0C01 1
+ysfvoice 0000FF 1
+ysfvoice 0000FE 0
+ysfvoice 6363010000 1
 # ysfcall <record> <callsign, "-" for none>: the radio-wide record (ysf-codeplug.md 1)
 ysfcall - -
 ysfcall 4E3043414C4C N0CALL

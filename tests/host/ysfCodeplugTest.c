@@ -84,10 +84,14 @@ static void test_vectors(void)
 			ysf_chan_decode(b, unhex(w[1], b, sizeof b), &c);
 			CHECK(c.tx_dgid == h(w[2]) && c.rx_dgid == h(w[3]));
 		} else if (strcmp(w[0], "ysfenc") == 0) {
-			ysf_chan_t c = { (uint8_t)h(w[1]), (uint8_t)h(w[2]) };
+			ysf_chan_t c = { (uint8_t)h(w[1]), (uint8_t)h(w[2]), false };
 			uint8_t e[YSF_CP_CHAN_LEN];
 			ysf_chan_encode(&c, e);
 			CHECK(unhex(w[3], b, sizeof b) == YSF_CP_CHAN_LEN && memcmp(e, b, YSF_CP_CHAN_LEN) == 0);
+		} else if (strcmp(w[0], "ysfvoice") == 0) {
+			ysf_chan_t c;
+			ysf_chan_decode(b, unhex(w[1], b, sizeof b), &c);
+			CHECK(c.vw == (h(w[2]) != 0));
 		} else if (strcmp(w[0], "ysfcall") == 0) {
 			ysf_radio_t r;
 			int len = unhex(w[1], b, sizeof b);
@@ -205,6 +209,14 @@ static void test_save(void)
 	yc.tx_dgid = yc.rx_dgid = 42;
 	CHECK(ysf_chan_save(20, &r, &yc) && codeplug_channel(20, &r) && ysf_chan_load(20, &r, &back) && back.tx_dgid == 42 &&
 	      back.rx_dgid == 42);
+	// The editor set VW (the voice byte after the DG-IDs): a save from the radio changes the DG-IDs and keeps it
+	codeplug_tag_t t = { .kind = CODEPLUG_KIND_YSF, .system = CODEPLUG_SYSTEM_NONE, .flags = CODEPLUG_TAG_TX };
+	const uint8_t vw_blk[3] = { 7, 7, YSF_CP_VOICE_VW };
+	CHECK(codeplug_tag_rewrite(20, r.name, &t, vw_blk, sizeof vw_blk) && codeplug_channel(20, &r) &&
+	      ysf_chan_load(20, &r, &back) && back.vw && back.tx_dgid == 7);
+	yc = (ysf_chan_t){ .tx_dgid = 9, .rx_dgid = 9 };
+	CHECK(ysf_chan_save(20, &r, &yc) && codeplug_channel(20, &r) && ysf_chan_load(20, &r, &back) && back.vw &&
+	      back.tx_dgid == 9 && back.rx_dgid == 9);
 }
 
 int main(void)

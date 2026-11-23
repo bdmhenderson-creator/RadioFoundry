@@ -1939,6 +1939,8 @@
  "editor.ysf.tx_dgid": "TX DG-ID",
  "editor.ysf.rx_dgid": "RX DG-ID",
  "editor.ysf.dgid_any": "RX DG-ID 0 hears every DG-ID.",
+ "editor.ysf.vw": "Send VW (full-rate voice)",
+ "editor.ysf.vw_help": "Off: the channel sends DN voice. On: it sends VW (Voice FR). A radio built without VW sends DN.",
  "editor.ysf.callsign": "YSF callsign",
  "editor.ysf.callsign_help": "Up to 10 characters: letters, digits, - and /. Leave blank to use the radio name's callsign. The radio ID is not set here: every radio makes its own from its chip.",
  "editor.sfr.role": "Role",

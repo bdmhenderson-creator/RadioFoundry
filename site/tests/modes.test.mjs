@@ -474,7 +474,13 @@ test("vectors: YSF channel block, callsign record", () => {
 	assert.ok(vectors("ysfchan").length >= 8);
 	for (const l of vectors("ysfchan")) {
 		const [b, tx, rx] = l.split(" ");
-		assert.deepEqual(ysf.decodeChan(bytes(b) ?? new Uint8Array(0)), { txDgid: parseInt(tx, 16), rxDgid: parseInt(rx, 16) }, l);
+		const d = ysf.decodeChan(bytes(b) ?? new Uint8Array(0));
+		assert.deepEqual({ txDgid: d.txDgid, rxDgid: d.rxDgid }, { txDgid: parseInt(tx, 16), rxDgid: parseInt(rx, 16) }, l);
+	}
+	assert.ok(vectors("ysfvoice").length >= 5);
+	for (const l of vectors("ysfvoice")) {
+		const [b, vw] = l.split(" ");
+		assert.equal(ysf.decodeChan(bytes(b) ?? new Uint8Array(0)).vw, vw === "1", l);
 	}
 	for (const l of vectors("ysfenc")) {
 		const [tx, rx, b] = l.split(" ");
@@ -489,7 +495,12 @@ test("vectors: YSF channel block, callsign record", () => {
 test("YSF: a channel round-trips, the callsign record too, and no field holds a radio ID", () => {
 	const v = ysf.encodeChan({ txDgid: 12, rxDgid: 0 }, Uint8Array.of(0, 0, 0xAA, 0xBB));
 	assert.equal(hexOf(v), "0C00AABB");	// bytes past the block kept
-	assert.deepEqual(ysf.decodeChan(v), { txDgid: 12, rxDgid: 0 });
+	assert.deepEqual(ysf.decodeChan(v), { txDgid: 12, rxDgid: 0, vw: false });
+	// VW sets bit 0 of the voice byte and keeps its other bits; DN on a 2-byte block stays 2 bytes
+	assert.equal(hexOf(ysf.encodeChan({ txDgid: 1, rxDgid: 2, vw: true }, Uint8Array.of(0, 0, 0xF0, 0xBB))), "0102F1BB");
+	assert.equal(hexOf(ysf.encodeChan({ txDgid: 1, rxDgid: 2, vw: false }, Uint8Array.of(0, 0, 0xF1))), "0102F0");
+	assert.equal(hexOf(ysf.encodeChan({ txDgid: 1, rxDgid: 2, vw: false })), "0102");
+	assert.equal(hexOf(ysf.encodeChan({ txDgid: 1, rxDgid: 2, vw: true })), "010201");
 	assert.equal(ysf.encodeRadio({ callsign: "" }), null);	// none: the radio name's
 	assert.equal(hexOf(ysf.encodeRadio({ callsign: "n0call" })), "4E3043414C4C00000000");
 	const keys = [...ysf.ysfKind.fields().map((f) => f.key), ...ysf.ysfKind.settings.fields.map((f) => f.key)];

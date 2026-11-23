@@ -31,8 +31,10 @@ The tag ([channel-modes.md](channel-modes.md) 2): no system, flag bit 0 transmit
 |---|---|---|
 | 0 | 1 | Transmit DG-ID, 0-99. Above 99 reads as 0 |
 | 1 | 1 | Receive DG-ID, 0-99; 0 = every DG-ID. Above 99 reads as 0 |
+| 2 | 1 | Voice: bit 0 set sends VW (Voice FR, [ysf.md](ysf.md) 10) instead of DN, in a build with `CONFIG_YSF_VW` (DN elsewhere). Bits 1-7 reserved: written 0, kept as found. Absent: DN |
 
-A zeroed block, or none, sends DG-ID 0 and hears every DG-ID; with the tag's flag bit 0 clear, receive only.
+A zeroed block, or none, sends DG-ID 0 and hears every DG-ID; with the tag's flag bit 0 clear, receive only. The
+voice byte only chooses what is sent: a radio with `CONFIG_YSF_VW` plays VW and DN on every YSF channel.
 
 The base record carries:
 
@@ -48,9 +50,10 @@ A YSF channel the radio saves (the VFO in YSF stored as a channel, a mode change
 as [channel-modes.md](channel-modes.md) 2.4 gives: the base record as the safe stand-in, then a new tag of kind 103
 with no system, transmit allowed from the channel and a block from the YSF settings (the DG-IDs). When the channel
 editor changed the DG-ID ([ui.md](ui.md) 2.1) the edited block is written over the front of the tag's, the rest of
-the tag kept. A channel the editor's Mode row made YSF starts with DG-ID 0 both ways.
+the tag kept. The radio writes the two DG-ID octets only: the voice byte is set by the Codeplug Editor, and a save on
+the radio keeps it. A channel the editor's Mode row made YSF starts with DG-ID 0 both ways.
 
 ## 3. Sharing
 
-A zone share carries a YSF channel's tag as it is ([zone-share.md](zone-share.md) 4.2): the block is 2 octets, inside
+A zone share carries a YSF channel's tag as it is ([zone-share.md](zone-share.md) 4.2): the block is 2 or 3 octets, inside
 the share's limit of 64. The radio-wide record (the callsign) is never shared, and there is no radio ID to share.
