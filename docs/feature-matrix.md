@@ -58,6 +58,7 @@ is `tools/bringup.py list --radio <id>`.
 | `ysf` | not recorded | not written | not recorded | not recorded | not written | not written | not written | not recorded |
 | `dmr_voice` | pass (seed) | pass (seed) | pass (seed) | pass (seed) | pass (seed) | not recorded | partial, needs re-run | partial, needs re-run |
 | `dmr_privacy` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | partial, needs re-run |
+| `dmr_aes` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
 | `dmr_data_privacy` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
 | `dmr_talker_alias` | not recorded | pass (seed) | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | pass, needs re-run |
 | `dmr_gps` | not recorded | pass (seed) | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | off |
@@ -202,6 +203,7 @@ clock`; ? = not known yet). No driver reads the clock yet ([radio-features.md](s
 | `SUBTONE` | ● | ● | ● | ● | ● | ● | ● | ● |
 | `DMR` | ● | ● | ● | ● | ● | ● | ● | ● |
 | `DMR_PRIVACY` | ● | ● | ● | ● | ● | ● | ● | ● |
+| `DMR_AES` | ● | ● | ● | ● | ● | ● | ● | ● |
 | `DMR_TALKER_ALIAS` | ● | ● | ● | ● | ● | ● | ● | ● |
 | `DMR_GPS` | ● | ● | ● | ● | ● | ● | ● | ○ |
 | `DMR_SMS` | ● | ● | ● | ● | ● | ● | ● | ✕ |
@@ -332,6 +334,7 @@ clock`; ? = not known yet). No driver reads the clock yet ([radio-features.md](s
 | NXDN Scrambler (15-bit) | `NXDN_SCRAMBLER` | 468 | — | Needs `NXDN`; supports conventional voice calls. The NXDN air interface must support the requested direction. Checked on air against another radio running RadioFoundry and a commercial portable ([bring-up record](testing/dm32-bringup.md#nxdn-scrambler-interoperability)). |
 | YSF (C4FM) DN voice: the frame codec, receive, the call layer, the engine, the YSF mode in the radio core, the radio ID and rooms | `YSF` | — | — | Needs `DMR` (its voice goes through the DMR vocoder path, as NXDN's) and a board with an air interface provider (`board.air`). The VFO's mode tile, the debug link or a stored YSF channel sets it ([ysf.md](spec/ysf.md) 5, [ysf-codeplug.md](spec/ysf-codeplug.md)). The radio ID comes from the MCU's unique ID ([ysf.md](spec/ysf.md) 6). Checked on air on a DM-32UV: direct, through a repeater and a hotspot ([bring-up](testing/dm32-bringup.md#ysf-c4fm)). DM-32UV: 19,556 B flash, 3,392 B RAM with the room commands ([ysf.md](spec/ysf.md) 9) and the soft modem's equalizer and tone notch ([air-interface.md](spec/air-interface.md) 6.1, 3.1 KB and 1.2 KB of it); the engine shares NXDN's block; ARM sizes not measured yet |
 | Basic privacy (Motorola / Anytone BP) | `DMR_PRIVACY` | 1,936 | 1,992 |  |
+| AES-256 DMR voice, PI header and late-entry signaling | `DMR_AES` | 3,992 | — | Requires `DMR_PRIVACY`. DM-1701: 3,992 B flash and 480 B RAM with `DMR_AES` on versus off. TX to a receiver of another make needs the modem driver's burst F field (`set_burst_f`, [dmr-voice.md](spec/dmr-voice.md) 5.1): only the HR_C7000 driver has it (DM-32UV); on the HR_C6000 and other radios our AES overs reach radios running RadioFoundry only (#864). |
 | Talker alias receive and send | `DMR_TALKER_ALIAS` | 984 | 1,300 |  |
 | ETSI GPS Info in the embedded LC | `DMR_GPS` | 2,208 | 2,152 |  |
 | DMR emergency (alarm, emergency call, hot mic) | `DMR_EMERGENCY` | 3,296 | 3,188 |  |

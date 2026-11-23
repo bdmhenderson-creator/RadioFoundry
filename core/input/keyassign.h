@@ -41,7 +41,8 @@ typedef enum {
 	KEYFN_VFO_TOGGLE,	// between the channel and the VFO, as a VFO/MR key (CONFIG_VFO)
 	KEYFN_TONE_BURST,	// FM repeater access, raw edges (press only)
 	KEYFN_TALK_LABEL,	// Home's talk line: the talkgroup's name or its number first (CONFIG_DMR)
-	KEYFN_YSF_ROOMS,		// the Rooms page (CONFIG_YSF; on a YSF channel)
+	KEYFN_SCAN_SKIP,	// skip the channel that stopped the scan, until the scan stops
+	KEYFN_YSF_ROOMS,	// the Rooms page (CONFIG_YSF; on a YSF channel)
 	KEYFN_COUNT
 } keyfn_t;
 

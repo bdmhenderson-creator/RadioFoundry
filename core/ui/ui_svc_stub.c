@@ -39,6 +39,7 @@ WEAK bool ui_svc_privacy(bool on) { (void)on; return false; }
 WEAK bool ui_svc_monitor(bool on) { (void)on; return false; }
 WEAK bool ui_svc_vox(bool on) { (void)on; return false; }
 WEAK bool ui_svc_save_channel(void) { return false; }
+WEAK void ui_svc_next_aes_key(channel_t *ch) { (void)ch; }
 WEAK bool ui_svc_write_channel(uint16_t number, const channel_t *ch, uint16_t from) { (void)number; (void)ch; (void)from; return false; }
 #if CONFIG_YSF
 WEAK void ui_svc_ysf_rid(char out[RADIO_YSF_RID_LEN + 1], bool *weak)
