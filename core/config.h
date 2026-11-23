@@ -350,6 +350,10 @@
 #ifndef CONFIG_YSF
 #define CONFIG_YSF			0
 #endif
+// YSF Voice FR (VW, docs/spec/ysf.md 10): played and sent through P25's full-rate voice path
+#ifndef CONFIG_YSF_VW
+#define CONFIG_YSF_VW			(CONFIG_YSF && CONFIG_P25)
+#endif
 #ifndef CONFIG_AIR
 #define CONFIG_AIR			(CONFIG_P25 || CONFIG_NXDN || CONFIG_YSF)
 #endif
@@ -583,6 +587,9 @@
 #endif
 #if CONFIG_YSF && !CONFIG_DMR
 #error "CONFIG_YSF needs CONFIG_DMR (its voice is the DMR vocoder's)"
+#endif
+#if CONFIG_YSF_VW && !(CONFIG_YSF && CONFIG_P25 && CONFIG_IMBE)
+#error "CONFIG_YSF_VW needs CONFIG_YSF and CONFIG_P25 (its voice plays through P25's full-rate path)"
 #endif
 #if (CONFIG_APRS_RX && !CONFIG_APRS_AFSK) || (CONFIG_APRS_IGATE && !(CONFIG_APRS_RX && CONFIG_HOSTLINK))
 #error "an APRS sub-feature is on without its parent (APRS_RX needs APRS_AFSK; APRS_IGATE needs APRS_RX and HOSTLINK)"

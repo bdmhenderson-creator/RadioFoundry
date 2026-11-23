@@ -93,6 +93,21 @@ int ysf_dch_get(const uint8_t *hard, const int8_t *soft, ysf_fec_work_t *w, uint
 void ysf_vch_put(uint8_t *frame, uint8_t n, const uint8_t bits[AMBE_PARAM_BITS]);
 int ysf_vch_get(const uint8_t *hard, const int8_t *soft, uint8_t n, uint8_t bits[AMBE_PARAM_BITS]);
 
+// ── Voice FR, "VW" (docs/spec/ysf.md 10, CONFIG_YSF_VW) ──
+// A VW communications frame's five 72-symbol blocks are five full-rate voice frames (20 ms each), each P25 Phase 1's
+// 144-bit voice code word as it is (core/p25 p25_voice_encode), not whitened. The first communications frame after
+// the header (FN 0 of FT 1) carries CSD3 instead in blocks 0-2: one 20-byte long channel over their first 180
+// symbols, then 36 zero symbols; only its blocks 3 and 4 are voice
+#define YSF_VW_BYTES		11		// a full-rate frame: the 88 bits, the first in bit 7
+#define YSF_VW_CSD3_BLOCKS	3
+// Frame n = 0..4 to and from block n. get returns the corrections packed as P25_VOICE_ERRS (the full-rate decoder's
+// IMBE_ERRS): it never refuses; the decoder decides from them whether to trust the frame
+void ysf_vw_put(uint8_t *frame, uint8_t n, const uint8_t fr[YSF_VW_BYTES]);
+int ysf_vw_get(const uint8_t *hard, uint8_t n, uint8_t fr[YSF_VW_BYTES]);
+// CSD3: remarks 1-4, the caller's radio ID in the last five characters
+void ysf_csd3_put(uint8_t *frame, const uint8_t csd3[YSF_CSD_BYTES]);
+int ysf_csd3_get(const uint8_t *hard, const int8_t *soft, ysf_fec_work_t *w, uint8_t out[YSF_CSD_BYTES]);
+
 // The parts of the codec, for tests and tools
 uint8_t ysf_pn(uint16_t i);				// the whitening sequence's bit i
 extern const uint8_t ysf_sync[5];

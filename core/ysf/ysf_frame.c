@@ -6,9 +6,13 @@
 
 #include <string.h>
 
+#include "../config.h"
 #include "../air/air_syms.h"
 #include "../fec/conv.h"
 #include "../fec/crc16.h"
+#if CONFIG_YSF_VW
+#include "../p25/p25.h"
+#endif
 
 const uint8_t ysf_sync[5] = { 0xD4, 0x71, 0xC9, 0x63, 0x4D };
 
@@ -91,6 +95,11 @@ typedef struct {
 static const chan_t fich_ch = { 5, YSF_FICH_SYM, false };
 static const chan_t dch_ch = { 5, 0, true };
 static const chan_t csd_ch[2] = { { 9, 0, true }, { 9, 36, true } };
+#if CONFIG_YSF_VW
+// VW's CSD3 (ysf.md 10.1): the long channel's 180 coded dibits straight through blocks 0-2, not split per block as a
+// header's: the payload's symbols are contiguous, so one run from the first block's start
+static const chan_t csd3_ch = { 9, YSF_BLOCK_SYM(0), false };
+#endif
 
 // The frame symbol of channel position p
 static uint16_t chan_sym(const chan_t *c, uint16_t p)
@@ -319,3 +328,33 @@ int ysf_vch_get(const uint8_t *hard, const int8_t *soft, uint8_t n, uint8_t bits
 	}
 	return fixed;
 }
+
+#if CONFIG_YSF_VW
+// ── VW (ysf.md 10.1): each block is one P25 voice code word, byte aligned in the frame (block n starts at symbol
+// 120 + 72 n, bit 240 + 144 n), so the frame's own bytes are the code word ──
+_Static_assert(YSF_VW_BYTES == P25_IMBE_BYTES && YSF_BLOCK_SYMS * 2 == 8 * P25_VOICE_CODE_BYTES &&
+	       YSF_BLOCK_SYM(0) % 4 == 0 && YSF_BLOCK_SYMS % 4 == 0, "a VW block is a P25 voice code word, byte aligned");
+
+void ysf_vw_put(uint8_t *frame, uint8_t n, const uint8_t fr[YSF_VW_BYTES])
+{
+	p25_voice_encode(fr, frame + YSF_BLOCK_SYM(n) / 4);
+}
+
+int ysf_vw_get(const uint8_t *hard, uint8_t n, uint8_t fr[YSF_VW_BYTES])
+{
+	return p25_voice_decode(hard + YSF_BLOCK_SYM(n) / 4, fr);
+}
+
+void ysf_csd3_put(uint8_t *frame, const uint8_t csd3[YSF_CSD_BYTES])
+{
+	data_put(&csd3_ch, frame, csd3, YSF_CSD_BYTES);
+	// The 36 symbols after it are zero (what the radios send), whatever the buffer held
+	for (uint16_t i = YSF_BLOCK_SYM(0) + 180; i < YSF_BLOCK_SYM(YSF_VW_CSD3_BLOCKS); i++)
+		air_sym_put(frame, i, 0);
+}
+
+int ysf_csd3_get(const uint8_t *hard, const int8_t *soft, ysf_fec_work_t *w, uint8_t out[YSF_CSD_BYTES])
+{
+	return data_get(&csd3_ch, hard, soft, w, out, YSF_CSD_BYTES);
+}
+#endif

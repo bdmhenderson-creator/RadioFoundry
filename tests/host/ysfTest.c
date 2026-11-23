@@ -13,6 +13,7 @@
 #include "dmr/ambe/ambeFec.h"
 #include "air/air_syms.h"
 #include "fec/crc16.h"
+#include "p25/p25.h"
 
 static int failures, checks;
 #define CHECK(c, ...) do { checks++; if (!(c)) { failures++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -108,6 +109,143 @@ static void testReference(void)
 
 		CHECK(ysf_vch_get(frame, NULL, n, b) == 0 && !memcmp(b, bits[n], sizeof b), "VCH %u read back", n);
 	}
+}
+
+// ── VW (ysf.md 10): frames of a whole VW transmission from an independent reference (a Python implementation written
+// apart from the C, bit lists and brute-force decoding; the layout it encodes was found on a Yaesu radio's VW
+// transmission received off air). Its voice frames are full_rate(n), n from 0 ──
+static const char *vw_ref[2] = {
+	// FN 0 FT 1: CSD3 ("               00123") in blocks 0-2, full_rate(0) and (1) in blocks 3-4
+	"D471C9634D11FAD87A68F29CBF02608E407294EA075310F986C51FD3AD03DF2363CB7D607F1C84C2A85ABA46291014BE75BBF77FB812"
+	"4CF2C63DE25284251E7CCE641373E08BFBD58919EC00000000000000000013D28E5667AAA8F58CACD832A73E379B80825E6E85C5ABD0"
+	"6CA45DA1F5E16D1F82D239AE",
+	// FN 1 FT 1: full_rate(2) to (6)
+	"D471C9634D11EAA0EBCBF28FB077E88E62E304140763E29D70C5DC70F9549ADB92BF568337702908056F37FF73D31483D132173E4E64"
+	"EA9E0281BC3A99E303C1DAA3C8160205F18380A2F163C365BD56A37692F1A1918760AA1CDDAA657082B6D4304FE299AC1891495F5402"
+	"02368FD1C7B88277B998A439",
+};
+
+// Known 88-bit frames, the reference's rule
+static void full_rate(uint32_t n, uint8_t fr[YSF_VW_BYTES])
+{
+	uint32_t x = n * 2654435761u + 54321u;
+
+	memset(fr, 0, YSF_VW_BYTES);
+	for (uint8_t i = 0; i < 88; i++) {
+		x ^= x << 13;
+		x ^= x >> 17;
+		x ^= x << 5;
+		fr[i / 8] |= (uint8_t)((x & 1u) << (7 - i % 8));
+	}
+}
+
+static void testVwReference(void)
+{
+	static const uint8_t csd3[YSF_CSD_BYTES + 1] = "               00123";
+	uint8_t frame[YSF_FRAME_BYTES], ref[YSF_FRAME_BYTES], fr[YSF_VW_BYTES], got[YSF_VW_BYTES], out[YSF_CSD_BYTES];
+	ysf_fec_work_t w;
+	ysf_fich_t f;
+	uint32_t n = 0;
+
+	for (uint8_t k = 0; k < 2; k++) {
+		uint8_t first = k == 0 ? YSF_VW_CSD3_BLOCKS : 0;
+
+		hex(vw_ref[k], ref, sizeof ref);
+		CHECK(ysf_fich_get(ref, NULL, &w, &f) == 0 && f.fi == YSF_FI_COMMS && f.dt == YSF_DT_VW && f.fn == k &&
+		      f.ft == 1, "VW frame %u: FICH FI %u DT %u FN %u FT %u", k, f.fi, f.dt, f.fn, f.ft);
+		if (k == 0)
+			CHECK(ysf_csd3_get(ref, NULL, &w, out) == 0 && !memcmp(out, csd3, YSF_CSD_BYTES), "CSD3 read");
+		memset(frame, 0xA5, sizeof frame);
+		ysf_frame_begin(frame);
+		ysf_fich_put(frame, &f);
+		if (k == 0)
+			ysf_csd3_put(frame, csd3);
+		for (uint8_t b = first; b < YSF_BLOCKS; b++, n++) {
+			int e;
+
+			full_rate(n, fr);
+			e = ysf_vw_get(ref, b, got);
+			CHECK(e == 0 && !memcmp(got, fr, sizeof fr), "VW frame %u block %u: full_rate(%u) read, errs %d", k, b, n,
+			      e);
+			ysf_vw_put(frame, b, fr);
+		}
+		CHECK(!memcmp(frame, ref, sizeof ref), "VW frame %u built as the reference", k);
+	}
+}
+
+// Which code word air bit i (0..143) of a full-rate frame belongs to: an error there alone shows in the counts
+static uint8_t vw_word_errs(uint16_t i)
+{
+	uint8_t code[P25_VOICE_CODE_BYTES], fr[YSF_VW_BYTES], back[YSF_VW_BYTES];
+
+	full_rate(1, fr);
+	p25_voice_encode(fr, code);
+	code[i / 8] ^= (uint8_t)(0x80 >> (i % 8));
+	return (uint8_t)p25_voice_decode(code, back);
+}
+
+// The full-rate code word under errors: one in a coded bit of a block (u7's seven bits are sent bare: an error there
+// stays), then three in u0's Golay word (which seeds the others' scrambling) are corrected and counted as the decoder
+// reads them; CSD3 takes scattered errors
+static void testVwFec(void)
+{
+	uint8_t frame[YSF_FRAME_BYTES], fr[YSF_BLOCKS][YSF_VW_BYTES], got[YSF_VW_BYTES], out[YSF_CSD_BYTES];
+	static const uint8_t csd3[YSF_CSD_BYTES + 1] = "          *****K7Q2Z";
+	unsigned ok = 0, csd_ok = 0;
+	ysf_fec_work_t w;
+
+	for (unsigned t = 0; t < 200; t++) {
+		memset(frame, 0, sizeof frame);
+		for (uint8_t b = 0; b < YSF_BLOCKS; b++) {
+			full_rate(rng(), fr[b]);
+			ysf_vw_put(frame, b, fr[b]);
+		}
+		uint8_t b = (uint8_t)(rng() % YSF_BLOCKS);
+		uint16_t i;
+
+		do
+			i = (uint16_t)(rng() % 144);
+		while (P25_VOICE_ERRS_TOTAL(vw_word_errs(i)) == 0);
+		uint16_t bit = (uint16_t)(2 * YSF_BLOCK_SYM(b) + i);
+
+		frame[bit / 8] ^= (uint8_t)(0x80 >> (bit % 8));
+		bool good = true;
+
+		for (uint8_t k = 0; k < YSF_BLOCKS; k++) {
+			int e = ysf_vw_get(frame, k, got);
+
+			good &= !memcmp(got, fr[k], sizeof got) && P25_VOICE_ERRS_TOTAL(e) == (k == b);
+		}
+		ok += good;
+	}
+	CHECK(ok == 200, "one error a frame: %u of 200", ok);
+
+	// u0's word is c0, sent in air bits 0, 7, 12, ... (P25's table 5-1): flip three of them
+	memset(frame, 0, sizeof frame);
+	full_rate(7, fr[0]);
+	ysf_vw_put(frame, 0, fr[0]);
+	for (uint16_t i = 0, n = 0; i < 144 && n < 3; i++) {
+		if (P25_VOICE_ERRS_C0(vw_word_errs(i)) == 0)
+			continue;		// not one of c0's bits
+		frame[30 + i / 8] ^= (uint8_t)(0x80 >> (i % 8));
+		n++;
+	}
+	int e = ysf_vw_get(frame, 0, got);
+
+	CHECK(!memcmp(got, fr[0], sizeof got) && P25_VOICE_ERRS_C0(e) == 3 && P25_VOICE_ERRS_TOTAL(e) == 3,
+	      "three errors in u0's word: corrected, errs %#x", e);
+
+	for (unsigned t = 0; t < 100; t++) {
+		memset(frame, 0, sizeof frame);
+		ysf_csd3_put(frame, csd3);
+		for (uint8_t k = 0; k < 4; k++) {
+			uint16_t bit = (uint16_t)(2 * YSF_BLOCK_SYM(0) + 90 * k + rng() % 90);
+
+			frame[bit / 8] ^= (uint8_t)(0x80 >> (bit % 8));
+		}
+		csd_ok += ysf_csd3_get(frame, NULL, &w, out) >= 0 && !memcmp(out, csd3, YSF_CSD_BYTES);
+	}
+	CHECK(csd_ok == 100, "CSD3 with four scattered errors: %u of 100", csd_ok);
 }
 
 // ── FEC: hard bit errors, then soft values with noise ──
@@ -846,6 +984,8 @@ int main(void)
 	testRid();
 	testReference();
 	testFec();
+	testVwReference();
+	testVwFec();
 	testCallThroughFramer();
 	testEngines();
 	testRooms();
