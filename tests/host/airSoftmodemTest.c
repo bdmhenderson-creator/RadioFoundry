@@ -688,7 +688,7 @@ static void testHole(void)
 // ── The adaptive options (air-interface.md 6.1): a profile's own, in memory its engine lends ──
 static air_softmodem_adapt_t adapt_mem;
 
-// A System Fusion-like profile: 4800 symbols/s, 2700 Hz, a 20-symbol sync opening every 480-symbol frame
+// A YSF-like profile: 4800 symbols/s, 2700 Hz, a 20-symbol sync opening every 480-symbol frame
 static air_profile_t ysf_like(uint8_t opts)
 {
 	air_profile_t p;
