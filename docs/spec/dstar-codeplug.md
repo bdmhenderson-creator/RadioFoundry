@@ -31,7 +31,7 @@ The callsign characters are the ones callsigns and the gateway commands of 2.3 u
 character out of a header it sends. A writer cleans a field the same way before storing it, and a field shorter than
 its length is padded with spaces.
 
-## 2. Channel (kind 5)
+## 2. Channel (kind 6)
 
 The tag ([channel-modes.md](channel-modes.md) 2): no system (0xFF), no fallback. Flag bit 0, transmit allowed, is set
 on a new channel: D-STAR is an amateur mode the user transmits on. The base record rule still applies: the base record
@@ -89,9 +89,9 @@ and a gateway may answer some, all or none of them:
 
 A channel may also store such a UR, which then goes with every over on it.
 
-## 3. Radio-wide record (kind 5)
+## 3. Radio-wide record (kind 6)
 
-Key 0x0A00 + 4 ([channel-modes.md](channel-modes.md) 5.5):
+Key 0x0A00 + 6, 0x0A06 ([channel-modes.md](channel-modes.md) 5.5):
 
 | Offset | Size | Field |
 |---|---|---|

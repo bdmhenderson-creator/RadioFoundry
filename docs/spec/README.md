@@ -20,6 +20,7 @@ Past bugs, by subsystem: [gotchas.md](gotchas.md). Contributors read [docs/dev](
 | [dstar-codec.md](dstar-codec.md) | The software D-STAR voice codec (AMBE 3600x2400): structure, cost, quality, provenance |
 | [dstar-ambe-frame.md](dstar-ambe-frame.md) | The D-STAR AMBE voice frame: its three words, field map, Golay code, whitening and air interleave, and how the interleave was derived |
 | [position.md](position.md) | The radio's position: sources, settings, who reads it |
+| [satellite.md](satellite.md) | PC-managed orbital data, satellite passes and Doppler frequency compensation |
 | [ui.md](ui.md) | The user interface as built: screens, keys, the drawing layer ([docs/ux](../ux/) has the design) |
 
 ## DMR

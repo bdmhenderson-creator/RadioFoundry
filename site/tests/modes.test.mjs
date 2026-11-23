@@ -16,6 +16,7 @@ import { KINDS, SYSTEM_TYPES, offeredKinds, offeredTypes, kindName } from "../st
 import { nameCheck } from "../static/js/codeplug/modebytes.js";
 import { decodeConv, encodeConv, decodeUnit, decodeTsys, p25System, NAC_ANY } from "../static/js/codeplug/mode_p25.js";
 import { t3System, OPTS as T3_OPTS } from "../static/js/codeplug/mode_t3.js";
+import { aesSystem, randomAesKey } from "../static/js/codeplug/mode_aes.js";
 import { decodeChan, encodeChan, decodeStation, encodeStation, dstarKind } from "../static/js/codeplug/mode_dstar.js";
 
 const VECTORS = new URL("../../tests/vectors/channel-modes.txt", import.meta.url);
@@ -106,28 +107,28 @@ test("D-STAR: a channel and the radio-wide record round-trip, byte for byte uned
 	const d2 = newChannel({ name: "DV Simplex", rxHz: 438625000, txHz: 438625000, rxOnly: false });
 	m.channels.push(c, d2);
 	numberAll(m);
-	setKind(m, c, 5);
-	setKind(m, d2, 5);
+	setKind(m, c, 6);
+	setKind(m, d2, 6);
 	assert.equal(c.tagTx, true, "D-STAR: transmit allowed on a new channel");
 	assert.deepEqual(d2.params, { ur: "CQCQCQ", rpt1: "", rpt2: "", viaRepeater: false });
 	c.params = { ur: "CQCQCQ", rpt1: "n0call b", rpt2: "N0CALL G", viaRepeater: true };
-	m.modeSettings[5] = { my: "N0CALL", suffix: "MOBL", msg: "Hello from the bench" };
+	m.modeSettings[6] = { my: "N0CALL", suffix: "MOBL", msg: "Hello from the bench" };
 	const img = encode(m);
 	const d = decode(img);
 	const by = (n) => d.channels.find((x) => x.name === n);
-	assert.equal(by("DV Rpt").kind, 5);
+	assert.equal(by("DV Rpt").kind, 6);
 	assert.equal(by("DV Rpt").mode, "dmr");
 	assert.equal(by("DV Rpt").rxOnly, true, "the record is the stand-in");
 	assert.equal(by("DV Rpt").tagTx, true);
 	assert.deepEqual(by("DV Rpt").params, { ur: "CQCQCQ", rpt1: "N0CALL B", rpt2: "N0CALL G", viaRepeater: true });
 	assert.deepEqual(by("DV Simplex").params, { ur: "CQCQCQ", rpt1: "", rpt2: "", viaRepeater: false });
-	assert.deepEqual(d.modeSettings[5], { my: "N0CALL", suffix: "MOBL", msg: "Hello from the bench" });
+	assert.deepEqual(d.modeSettings[6], { my: "N0CALL", suffix: "MOBL", msg: "Hello from the bench" });
 	assert.deepEqual(encode(d).bytes, img.bytes);
 	const e = area(img);
 	const tag = decodeTag(getValue(e, MODE_KEY.tag + by("DV Rpt").number - 1));
-	assert.deepEqual([tag.kind, tag.system, tag.flags], [5, 0xFF, 0x01]);
+	assert.deepEqual([tag.kind, tag.system, tag.flags], [6, 0xFF, 0x01]);
 	assert.equal(hexOf(tag.params), "4351435143512020" + "4E3043414C4C2042" + "4E3043414C4C2047" + "01");
-	assert.equal(hexOf(getValue(e, MODE_KEY.setting + 5)), "4E3043414C4C20204D4F424C48656C6C6F2066726F6D207468652062656E6368");
+	assert.equal(hexOf(getValue(e, MODE_KEY.setting + 6)), "4E3043414C4C20204D4F424C48656C6C6F2066726F6D207468652062656E6368");
 	// a block with reserved flag bits and bytes past what the module knows: an edit keeps them
 	const key = MODE_KEY.tag + by("DV Rpt").number - 1;
 	const stored = getValue(e, key);
@@ -139,7 +140,7 @@ test("D-STAR: a channel and the radio-wide record round-trip, byte for byte uned
 	assert.deepEqual([...t.params.subarray(-3)], [0x81, 0x12, 0x34]);
 	assert.equal(decodeChan(t.params).ur, "REF030CL");
 	// offered: on a radio that reports it
-	assert.deepEqual(offeredKinds(empty(), "FM,DMR,DSTAR").map((k) => k.id), [5]);
+	assert.deepEqual(offeredKinds(empty(), "FM,DMR,DSTAR").map((k) => k.id), [6]);
 });
 
 test("D-STAR validation: callsign length and characters, message, via a repeater without RPT1", () => {
@@ -163,7 +164,7 @@ test("D-STAR validation: callsign length and characters, message, via a repeater
 	const c = newChannel({ name: "DV" });
 	m.channels.push(c);
 	numberAll(m);
-	setKind(m, c, 5);
+	setKind(m, c, 6);
 	c.params = { ...c.params, rpt2: "N0*CALL" };
 	assert.ok(validate(m).some((x) => x.code === "dstar_call_chars" && x.item === c));
 	assert.ok(validate(m, { features: "FM,DMR" }).some((x) => x.code === "mode_not_in_radio" && x.item === c));
@@ -633,6 +634,46 @@ test("NXDN: offered with the radio's feature; group, unit and channel ID ranges"
 	a.contact.id = 7;
 	a.dmrId = 3101276;
 	assert.ok(has(validate(m, { features: "FM,DMR,NXDN" }), "nxdn_unit_range", a));
+});
+
+test("AES keys are traffic keys: round-trip by system and ID, stripped exports retain the protected channel", () => {
+	const m = empty(), c = newChannel({ name: "Voice" });
+	m.channels.push(c);
+	for (const name of ["North", "South"]) m.systems.push(newSystem(m, 5, name));
+	numberAll(m);
+	m.systems[0].trafficKeys = [{ id: 0, key: "12".repeat(32) }, { id: 255, key: "34".repeat(32) }];
+	m.systems[1].trafficKeys = [{ id: 0, key: "56".repeat(32) }];
+	setKind(m, c, 5);
+	c.params.id = 0;
+	const keys = (x) => x.systems.map((s) => s.trafficKeys.map(({ id, key }) => ({ id, key })));
+	const img = encode(m), again = decode(img);
+	// system, algorithm 0x25, key ID (u16), flags, the 32 key bytes
+	assert.equal(hexOf(getValue(area(img), MODE_KEY.traffic)), "0025000000" + "12".repeat(32));
+	assert.deepEqual(keys(again), keys(m));
+	assert.equal(again.channels[0].params.id, 0);
+	assert.equal(again.channels[0].rxOnly, true);
+	again.systems[0].trafficKeys.shift();
+	const updated = round(again);
+	assert.deepEqual(keys(updated), [keys(m)[0].slice(1), keys(m)[1]]);
+	assert.equal(countSecrets(img.bytes), 3);
+	withoutSecrets(img.bytes);
+	assert.equal(countSecrets(img.bytes), 0);
+	const stripped = decode(img);
+	assert.equal(stripped.channels[0].kind, 5);
+	assert.equal(stripped.channels[0].params.id, 0);
+	assert.ok(stripped.systems.every((s) => s.trafficKeys.length === 0));
+});
+
+test("AES: Generate fills a key from the CSPRNG", () => {
+	const bytes = Uint8Array.from({ length: 32 }, (_, i) => i);
+	const rng = { getRandomValues: (a) => (a.set(bytes.subarray(0, a.length)), a) };
+	assert.equal(randomAesKey(rng), hexOf(bytes));
+	const a = randomAesKey(), b = randomAesKey();
+	assert.match(a, /^[0-9A-F]{64}$/);
+	assert.notEqual(a, b);
+	const col = aesSystem.traffic.columns.find((x) => x.key === "key");
+	assert.ok(col.secret && col.generate);
+	assert.match(col.generate(), /^[0-9A-F]{64}$/);
 });
 
 test("NXDN: traffic keys round-trip, resolve per system, and preserve opaque records", () => {
