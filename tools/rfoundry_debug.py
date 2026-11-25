@@ -16,8 +16,9 @@
     rfoundry_debug.py ptt --seconds S                key PTT for S seconds (at most 10; the firmware also times out)
     rfoundry_debug.py radio OP [ARG...]              channel +1, pos 3, zone 0, vfo on, freq MHZ, power lowest|LEVEL|+1, copy-vfo, ...
     rfoundry_debug.py radio mode fm|dmr|p25|nxdn     the channel's mode for now (the VFO's own in the VFO)
-    rfoundry_debug.py radio p25 [nac=N] [tg=N|unit=N] [rx_tgid=N] [talkaround=auto|on|off] [unit_id=N]
-                                                the P25 settings (CONFIG_P25; RAM only, view section p25)
+    rfoundry_debug.py radio p25 [nac=HEX] [tg=N|unit=N] [rx_tgid=N] [talkaround=auto|on|off] [unit_id=N]
+                                                the P25 settings (CONFIG_P25; RAM only, view section p25); a NAC
+                                                is hex with or without 0x (293 is 0x293), as radios and hotspots write it
     rfoundry_debug.py radio nxdn [rate=9600|4800] [ran=N] [rx_ran=N] [tx_ran=N] [rx_gid=N] [tg=N|unit=N]
                                  [unit_id=N] [emergency=0|1]
                                                 the NXDN settings (CONFIG_NXDN; RAM only, view section nxdn)
@@ -1927,6 +1928,19 @@ def cmd_volume(link, a):
     return 0
 
 
+def parse_nac(val):
+    """A P25 NAC as people write it: hex, with or without 0x. Every radio, CPS and hotspot (and this firmware's own
+    channel editor and display) shows NACs in hex, so "293" means the default 0x293. Read as decimal it was 0x125,
+    and a bench over set that way went unheard by a hotspot on NAC 293 (25 Nov 2026)."""
+    try:
+        v = int(val, 16)
+    except ValueError:
+        raise SystemExit("NAC %r: three hex digits, 0 to FFF (F7E: any)" % val)
+    if not 0 <= v <= 0xFFF:
+        raise SystemExit("NAC %r: 0 to FFF" % val)
+    return v
+
+
 def cmd_radio(link, a):
     op, args = a.op, a.args
 
@@ -1993,13 +2007,15 @@ def cmd_radio(link, a):
         if not args or args[0] not in CHANNEL_MODES:
             raise SystemExit("mode " + "|".join(CHANNEL_MODES))
         link.dmr_fields(mode=args[0])
-    elif op == "p25":                 # p25 [rx_nac=N] [tx_nac=N] [nac=N] [rx_tgid=N] [talkaround=auto|on|off] [tg=N|unit=N] [unit_id=N]
+    elif op == "p25":                 # p25 [rx_nac=HEX] [tx_nac=HEX] [nac=HEX] [rx_tgid=N] [talkaround=auto|on|off] [tg=N|unit=N] [unit_id=N]
         kw = {}
         for a in args:
             k, _, val = a.partition("=")
             if k == "nac":
-                kw["rx_nac"] = kw["tx_nac"] = int(val, 0)
-            elif k in ("rx_nac", "tx_nac", "rx_tgid", "unit_id"):
+                kw["rx_nac"] = kw["tx_nac"] = parse_nac(val)
+            elif k in ("rx_nac", "tx_nac"):
+                kw[k] = parse_nac(val)
+            elif k in ("rx_tgid", "unit_id"):
                 kw[k] = int(val, 0)
             elif k == "talkaround" and val in P25_TALKAROUND:
                 kw[k] = val
@@ -2007,7 +2023,7 @@ def cmd_radio(link, a):
                 kw["unit_call"] = k == "unit"
                 kw["tx_dst"] = int(val, 0)
             else:
-                raise SystemExit("p25 [nac=N] [rx_nac=N] [tx_nac=N] [rx_tgid=N] [talkaround=auto|on|off] "
+                raise SystemExit("p25 [nac=HEX] [rx_nac=HEX] [tx_nac=HEX] [rx_tgid=N] [talkaround=auto|on|off] "
                                  "[tg=N|unit=N] [unit_id=N]")
         link.p25_settings_update(**kw)
     elif op == "nxdn":                # nxdn [rate=9600|4800] [ran=N] [rx_ran=N] [tx_ran=N] [rx_gid=N] [tg=N|unit=N] [unit_id=N] [emergency=0|1]
@@ -2862,6 +2878,29 @@ def self_test():
           not mem_allowed(0x14030000, 4, CHIP_HRC7000) and not mem_allowed(0x00010000, 4, CHIP_STM32F4) and
           mem_allowed(0xE000ED00, 4, CHIP_STM32F4) and not mem_allowed(0xE000ED02, 2, CHIP_STM32F4),
           "READ_MEM windows by family")
+    # P25 NACs are hex as typed, as every radio and hotspot writes them: "293" is 0x293, never decimal 293 (0x125)
+    class P25Link:
+        def __init__(self):
+            self.kw = None
+
+        def p25_settings_update(self, **kw):
+            self.kw = kw
+
+    def p25_cmd(*args):
+        lk = P25Link()
+        cmd_radio(lk, argparse.Namespace(op="p25", args=list(args)))
+        return lk.kw
+    check(p25_cmd("nac=293") == {"rx_nac": 0x293, "tx_nac": 0x293}, "p25 nac=293: 0x293 both ways")
+    check(p25_cmd("nac=0x293", "rx_tgid=100") == {"rx_nac": 0x293, "tx_nac": 0x293, "rx_tgid": 100},
+          "p25 nac=0x293 the same; rx_tgid stays decimal")
+    check(p25_cmd("rx_nac=f7e", "tx_nac=1A5") == {"rx_nac": 0xF7E, "tx_nac": 0x1A5}, "p25 rx_nac/tx_nac: hex, any case")
+    for bad in ("nac=1000", "nac=xyz"):
+        try:
+            p25_cmd(bad)
+            refused = False
+        except SystemExit:
+            refused = True
+        check(refused, "p25 %s: refused" % bad)
     # Restart and write commands never guess between radios: a serial cable may carry one too
     saved = (find_ports, find_cables, find_network_radios, os.environ.pop("RFOUNDRY_PORT", None))
     g = globals()
