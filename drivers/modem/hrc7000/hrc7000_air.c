@@ -68,16 +68,22 @@ uint32_t hrc7000_air_tx_fit(const air_profile_t *p)
 	return f;
 }
 
-static uint32_t scale_byte(uint32_t b, uint16_t dev)
+// The bytes set the weight of the chip's pulse (DMR's root raised cosine 0.2), and the board calibrates them to DMR's
+// 1944 Hz, which a matched receiver reads whole. So an RRC profile (NXDN at either rate, a doubled symbol being two
+// pulses of one weight) is scaled against 1944. A C4FM receiver integrates one symbol and reads less of the same
+// pulse (0.905 in theory); P25 keeps the 1820 Hz measured at such a receiver (#644), which on air on 25 Nov 2026 read
+// 1720-1750 Hz for 1800, in spec. Until then 1820 scaled every profile, which sent NXDN about 7 % heavy (10.3)
+static uint32_t scale_byte(uint32_t b, const air_profile_t *p)
 {
-	uint32_t v = (b * dev + HRC7000_AIR_DMR_DEV_HZ / 2u) / HRC7000_AIR_DMR_DEV_HZ;
+	uint32_t ref = p->shape == AIR_SHAPE_C4FM ? HRC7000_AIR_C4FM_DEV_HZ : HRC7000_AIR_DMR_DEV_HZ;
+	uint32_t v = (b * p->dev_outer_hz + ref / 2u) / ref;
 	return v < 1u ? 1u : v > 255u ? 255u : v;
 }
 
 uint32_t hrc7000_air_mod_bias(const air_profile_t *p, uint32_t dmr_mod_bias)
 {
-	uint32_t mod2 = scale_byte((dmr_mod_bias >> 8) & 0xFFu, p->dev_outer_hz);
-	uint32_t mod1 = scale_byte(dmr_mod_bias & 0xFFu, p->dev_outer_hz);
+	uint32_t mod2 = scale_byte((dmr_mod_bias >> 8) & 0xFFu, p);
+	uint32_t mod1 = scale_byte(dmr_mod_bias & 0xFFu, p);
 	return (dmr_mod_bias & 0xFFFF0000u) | mod2 << 8 | mod1;
 }
 

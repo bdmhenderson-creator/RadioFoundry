@@ -1155,13 +1155,38 @@ The wrong symbols at 140-142 matched the chunk written into the same half two sl
 
 ### 10.3 Deviation
 
-The modulation bytes of RF_MOD_BIAS (b15:8, b7:0), which the board writes for DMR at its TX on, are scaled by
-dev_outer_hz / 1820 and clamped to 1..255; b31:16 stay. 1820 Hz is the outer deviation the calibrated DMR bytes give,
-not DMR's nominal 1944 Hz: scaled by 1800 / 1944 they gave 1685 Hz (93.6 % of P25's 1800 Hz) measured from the SDR
-bench's I/Q, which leaves an MMDVM hotspot little room for its own offset. Deviation is linear in them, about
-25 Hz per step through zero, and 0x118 and FM_DEV_COEF don't move it (measured on one HR_C7000 radio).
-Outside 100-6000 Hz the fit says `AIR_FIT_DEV_APPROX`. The pulse filter is the chip's own (raised cosine for DMR), so
-every shape but RRC 0.2 is `AIR_FIT_SHAPE_APPROX`.
+The modulation bytes of RF_MOD_BIAS (b15:8, b7:0), which the board writes for DMR at its TX on, set the weight of
+the chip's pulse, and its calibration makes that DMR's 1944 Hz. An RRC profile's bytes are scaled by
+dev_outer_hz / 1944, a C4FM profile's by dev_outer_hz / 1820, clamped to 1..255; b31:16 stay. Deviation is linear in
+them, about 25 Hz per step through zero, and 0x118 and FM_DEV_COEF don't move it (measured on one HR_C7000 radio).
+
+The pulse is DMR's root raised cosine 0.2 at 4800 symbols/s, whatever the profile asks: a least-squares fit to a P25
+over from a second HR_C7000 radio (25 Nov 2026, 438.7 MHz, Pluto) gave h(0) 1.047 and h(T/2) 0.624 of the weight,
+against 1.055 and 0.627 for RRC 0.2. A matched (RRC) receiver reads the weight whole, so an RRC profile (NXDN, both
+rates) is scaled against 1944. A C4FM receiver integrates one symbol, which reads about 0.905 of this pulse's weight
+(C4FM's own pulse, raised cosine times inverse sinc, reads 1.0 there), with some ISI (about 6 % of the outer level
+RMS); P25 keeps the 1820 Hz measured at such a receiver.
+
+| Scaling | Radio | P25 (C4FM receiver; 1800) | NXDN 4800 (weight; 1050) |
+|---|---|---|---|
+| 1944 Hz for all | first HR_C7000 radio | 1610-1685 Hz | — |
+| 1820 Hz for all (until 25 Nov 2026) | first HR_C7000 radio | 1766-1786 Hz | 1054 Hz (soft modem); 9600: 2518 Hz |
+| 1820 Hz for all | second HR_C7000 radio, 25 Nov 2026 | 1720-1750 Hz; the idle `5F` tone 2673 Hz (C4FM: 2828) | 1130 Hz |
+| RRC 1944 Hz, C4FM 1820 Hz (now) | second HR_C7000 radio, predicted | unchanged | 1050 Hz; 9600: 2390 Hz |
+
+That radio's weights put its DMR bytes at 1911-1958 Hz (P25 1890-1910 Hz for 1800 asked, NXDN 1130 for 1050), so
+1944 is its calibration too, and one 1820 Hz constant for every profile had sent NXDN about 7 % heavy on both radios.
+Peak readings of a 4FSK transmission are not its deviation: that over's 99th percentile was 2.45 kHz (P25) and
+1.59 kHz (NXDN), the pulse's overshoot.
+
+NXDN 4800 bit/s goes out as each symbol twice through this 4800-symbol pulse, not NXDN's root raised cosine at
+2400 times its sinc shaper (TS 1-A 3.4). An integrate-and-dump receiver reads it with an open eye (0.77 on air); the
+standard's receive filter (root raised cosine over the sinc) closes it. With four levels at 4800 symbols/s no choice
+of chip symbols makes the narrower pulse (it needs levels between them); the FM flat transmit path, where a board
+has one, could. `hrc7000AirTest` models the pulse, turns the driver's bytes into Hz and runs each mode's receive
+filter.
+Outside 100-6000 Hz the fit says `AIR_FIT_DEV_APPROX`. The pulse filter is the chip's own, so every shape but RRC 0.2
+is `AIR_FIT_SHAPE_APPROX`.
 
 ### 10.4 Checked on a radio, and open
 

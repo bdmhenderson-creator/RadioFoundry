@@ -1223,7 +1223,7 @@ hrc7000DmrTest: hrc7000DmrTest.c $(HRC7)/hrc7000_dmr.c $(HRC7)/hrc7000_cach.c $(
 TESTS   += hrc7000AirTest
 hrc7000AirTest: hrc7000AirTest.c fuzz.h $(HRC7)/hrc7000_air.c $(HRC7)/hrc7000_air.h $(HRC7)/hrc7000_dmr.c $(HRC7)/hrc7000.c $(ROOT)/hal/hal_air.h
 	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -DCONFIG_P25=1 -o $@ hrc7000AirTest.c $(HRC7)/hrc7000_air.c $(HRC7)/hrc7000_dmr.c $(HRC7)/hrc7000.c \
-		$(CORE)/dmr/fec/dmrFec.c $(CORE)/dmr/fec/dmrSoftComb.c
+		$(CORE)/dmr/fec/dmrFec.c $(CORE)/dmr/fec/dmrSoftComb.c -lm
 
 # The HR_C7000 BS outbound (drivers/modem/hrc7000/hrc7000_bs.c, split duplex TX half), and the slot engine's suite again
 # with its hooks built in

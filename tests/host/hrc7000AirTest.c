@@ -6,7 +6,9 @@
 // time stamps, overrun and the receiver's restart at the gap, the copy set up again after a lost request, transmit
 // halves per slot boundary with no stale half, idle on underrun, last-chunk padding, the modulation bytes set and put
 // back, abort, the watchdog, suspend / resume, open / close / open, the DMR engine on the same memory after close, and
-// a seeded fuzz of interrupt and task order.
+// a seeded fuzz of interrupt and task order. And the deviation a profile's own receiver reads off the modulator: the
+// chip's pulse modelled numerically, the bytes the driver writes turned into Hz, each mode's receive filter run.
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include "modem/hrc7000/hrc7000_air.h"
@@ -310,17 +312,196 @@ static void test_pure(void)
 	p.dev_outer_hz = 7000;
 	CHECK((hrc7000_air_tx_fit(&p) & AIR_FIT_DEV_APPROX) != 0);
 
-	// Deviation is linear in the modulation bytes: both scaled, the bias half kept
+	// Deviation is linear in the modulation bytes: both scaled, the bias half kept. An RRC profile by its deviation
+	// over DMR's 1944 Hz; C4FM over the 1820 Hz a C4FM receiver reads of the DMR bytes (test_deviation)
+	p.shape = AIR_SHAPE_RRC;
 	p.dev_outer_hz = HRC7000_AIR_DMR_DEV_HZ;
 	CHECK(hrc7000_air_mod_bias(&p, DMR_MOD_BIAS) == DMR_MOD_BIAS);
-	p.dev_outer_hz = 1800;	// 0x4A * 1800 / 1820 = 73.2 -> 73
+	p.dev_outer_hz = 1050;	// 0x4A * 1050 / 1944 = 39.97 -> 40
+	CHECK(hrc7000_air_mod_bias(&p, DMR_MOD_BIAS) == 0x01E92828u);
+	p.dev_outer_hz = 2880;	// 109.6 -> 110, 0x21: 48.9 -> 49
+	CHECK(hrc7000_air_mod_bias(&p, 0x01E94A21u) == (0x01E90000u | 110u << 8 | 49u));
+	p.shape = AIR_SHAPE_C4FM;
+	p.dev_outer_hz = 1800;	// 0x4A * 1800 / 1820 = 73.2 -> 73: P25's bytes as before 25 Nov 2026
 	CHECK(hrc7000_air_mod_bias(&p, DMR_MOD_BIAS) == 0x01E94949u);
-	p.dev_outer_hz = 2880;	// 117.1 -> 117, 0x21: 52.2 -> 52
-	CHECK(hrc7000_air_mod_bias(&p, 0x01E94A21u) == (0x01E90000u | 117u << 8 | 52u));
 	p.dev_outer_hz = 6000;	// clamped
 	CHECK((hrc7000_air_mod_bias(&p, 0x0000FFFFu) & 0xFFFFu) == 0xFFFFu);
 	p.dev_outer_hz = 1;
 	CHECK((hrc7000_air_mod_bias(&p, DMR_MOD_BIAS) & 0xFFFFu) == 0x0101u);
+}
+
+// --- Deviation as the receiver reads it ---
+//
+// The chip's 4FSK modulator, modelled: each TX RAM symbol is a root raised cosine 0.2 pulse at 4800 symbols/s (DMR's
+// own) whose weight is linear in the RF_MOD_BIAS modulation byte, and a board's calibrated DMR byte gives DMR's 1944 Hz.
+// Both are the on-air findings of 25 Nov 2026 (an HR_C7000 radio, 438.7 MHz, Pluto): a least-squares fit of the pulse to a P25
+// over gave h(0) 1.047 and h(T/2) 0.624 of its weight (RRC 0.2: 1.055, 0.627), and the weights the 1820 Hz scaling
+// produced (P25 1890-1910 Hz for 1800, NXDN 1130 for 1050) put the DMR bytes at 1911-1958 Hz.
+//
+// Each mode is then read by its own standard's receive filter: P25 (C4FM) integrates one symbol (TIA-102.BAAA's
+// integrate-and-dump, what a C4FM receiver and the soft modem do), an RRC profile is read through the matched root
+// raised cosine at the chip's rate (DMR, NXDN at 9600; at 4800 bit/s each symbol is two chip symbols of one weight).
+// The test measures the symbol levels the receiver sees, not the bytes: the bug this guards was a scaling that was
+// right for one receiver's reading of the pulse and wrong for every other.
+
+#define DEV_CHIP_DMR_HZ	1944.0	// the symbol weight a board's calibrated DMR bytes give (above)
+#define DEV_OS		40	// model samples per chip symbol
+#define DEV_SPAN	8	// pulse half-length, chip symbols
+#define DEV_CHIP_SYMS	2400	// chip symbols modelled: 0.5 s
+#define DEV_N		(DEV_CHIP_SYMS * DEV_OS)
+
+static double dev_wave[DEV_N], dev_rx[DEV_N];
+static int8_t dev_sym[DEV_CHIP_SYMS];	// -3, -1, +1, +3 per chip symbol
+
+// Root raised cosine, roll-off a, time in symbols, unit area per symbol (so a run of one symbol settles at its weight)
+static double rrc(double t, double a)
+{
+	if (fabs(t) < 1e-9) {
+		return 1.0 - a + 4.0 * a / M_PI;
+	}
+	if (fabs(fabs(t) - 1.0 / (4.0 * a)) < 1e-9) {
+		return a / sqrt(2.0) * ((1.0 + 2.0 / M_PI) * sin(M_PI / (4.0 * a)) + (1.0 - 2.0 / M_PI) * cos(M_PI / (4.0 * a)));
+	}
+	return (sin(M_PI * t * (1.0 - a)) + 4.0 * a * t * cos(M_PI * t * (1.0 + a))) / (M_PI * t * (1.0 - 16.0 * a * a * t * t));
+}
+
+// The modulator: the deviation (Hz) the chip makes from the bytes the driver wrote for p, symbols from a fixed LCG
+static void dev_modulate(const air_profile_t *p, uint32_t mod_bias)
+{
+	static const int8_t lvl[4] = { 1, 3, -1, -3 };	// TX RAM dibits 00 01 10 11 (2.10)
+	// Both bytes scale together; the chip's two-point modulation follows them as one (10.3)
+	double w = ((mod_bias & 0xFFu) + ((mod_bias >> 8) & 0xFFu)) / 2.0 * DEV_CHIP_DMR_HZ / 0x4A / 3.0;
+	int rep = p->sym_rate == 2400 ? 2 : 1;	// AIR_FIT_RATE_DOUBLED: the framer sends each symbol twice
+	uint32_t x = 12345u;
+	for (int i = 0; i < DEV_CHIP_SYMS; i += rep) {
+		x = x * 1103515245u + 12345u;
+		for (int k = 0; k < rep && i + k < DEV_CHIP_SYMS; k++) {
+			dev_sym[i + k] = lvl[(x >> 16) & 3u];
+		}
+	}
+	memset(dev_wave, 0, sizeof dev_wave);
+	for (int i = 0; i < DEV_CHIP_SYMS; i++) {
+		for (int j = -DEV_SPAN * DEV_OS; j <= DEV_SPAN * DEV_OS; j++) {
+			int n = i * DEV_OS + j;
+			if (n >= 0 && n < DEV_N) {
+				dev_wave[n] += w * dev_sym[i] * rrc((double)j / DEV_OS, 0.2);
+			}
+		}
+	}
+}
+
+// The receive filter of the profile's standard, into dev_rx, unit gain at DC
+static void dev_receive(const air_profile_t *p)
+{
+	int rep = p->sym_rate == 2400 ? 2 : 1;
+	for (int n = 0; n < DEV_N; n++) {
+		double acc = 0;
+		if (p->shape == AIR_SHAPE_C4FM) {
+			int half = rep * DEV_OS / 2;	// one of the profile's symbols, centred
+			for (int j = -half; j < half; j++) {
+				acc += n + j >= 0 && n + j < DEV_N ? dev_wave[n + j] : 0;
+			}
+			acc /= 2 * half;
+		} else {
+			for (int j = -DEV_SPAN * DEV_OS; j <= DEV_SPAN * DEV_OS; j++) {
+				acc += n + j >= 0 && n + j < DEV_N ? dev_wave[n + j] * rrc((double)j / DEV_OS, 0.2) : 0;
+			}
+			acc /= DEV_OS;
+		}
+		dev_rx[n] = acc;
+	}
+}
+
+typedef struct {
+	double outer, inner;	// half the distance between the +-3 and the +-1 means (Hz)
+	double isi;		// RMS spread of the samples about their level's mean (Hz)
+	double eye;		// the worst sample's distance to a decision threshold, over half the level spacing
+} dev_levels_t;
+
+// Sampled where the receiver decides: the centre of each of the profile's symbols (between a doubled pair's halves
+// for the box; at every chip symbol for the matched filter, where each half has zero ISI from the other)
+static dev_levels_t dev_measure(const air_profile_t *p)
+{
+	int rep = p->sym_rate == 2400 ? 2 : 1;
+	int step = p->shape == AIR_SHAPE_C4FM ? rep : 1;
+	int off = p->shape == AIR_SHAPE_C4FM ? (rep - 1) * DEV_OS / 2 : 0;
+	double sum[7] = { 0 }, sq[7] = { 0 };
+	int cnt[7] = { 0 };
+	for (int i = 2 * DEV_SPAN; i < DEV_CHIP_SYMS - 2 * DEV_SPAN; i += step) {
+		double v = dev_rx[i * DEV_OS + off];
+		sum[dev_sym[i] + 3] += v;
+		sq[dev_sym[i] + 3] += v * v;
+		cnt[dev_sym[i] + 3]++;
+	}
+	double m[7];
+	double var = 0;
+	int total = 0;
+	for (int k = 0; k < 7; k += 2) {
+		m[k] = sum[k] / cnt[k];
+		var += sq[k] - cnt[k] * m[k] * m[k];
+		total += cnt[k];
+	}
+	dev_levels_t r = { (m[6] - m[0]) / 2, (m[4] - m[2]) / 2, sqrt(var / total), 1e9 };
+	double half = r.inner;	// thresholds at 0 and +-2 inner: half a spacing is one inner deviation
+	for (int i = 2 * DEV_SPAN; i < DEV_CHIP_SYMS - 2 * DEV_SPAN; i += step) {
+		double v = dev_rx[i * DEV_OS + off], e = 1e9;
+		int s = dev_sym[i];
+		double lo = s == -3 ? -1e9 : (s - 1) * half, hi = s == 3 ? 1e9 : (s + 1) * half;
+		e = fmin(v - lo, hi - v) / half;
+		r.eye = fmin(r.eye, e);
+	}
+	return r;
+}
+
+static dev_levels_t dev_run(const air_profile_t *p)
+{
+	dev_modulate(p, hrc7000_air_mod_bias(p, DMR_MOD_BIAS));
+	dev_receive(p);
+	return dev_measure(p);
+}
+
+static bool near(double v, double want, double frac)
+{
+	return fabs(v - want) <= want * frac;
+}
+
+static void test_deviation(void)
+{
+	// P25: the profile as core/p25/p25_rx.c gives it. A C4FM receiver reads the RRC pulse's weight at about 0.905
+	// (one symbol's integral). The bytes are tuned at such a receiver (1820 Hz); the model reads 1735 Hz, on air
+	// 1720-1750 Hz (25 Nov 2026): inside 5 % of 1800, where it stays
+	air_profile_t p25 = { .sym_rate = 4800, .levels = 4, .shape = AIR_SHAPE_C4FM, .shape_param = 20,
+			      .dev_outer_hz = 1800, .timing = AIR_TIMING_CONTINUOUS };
+	dev_levels_t r = dev_run(&p25);
+	printf("  P25: outer %.0f Hz, inner %.0f Hz, ISI %.0f Hz RMS, eye %.2f\n", r.outer, r.inner, r.isi, r.eye);
+	CHECK(near(r.outer, 1800, 0.05));
+	CHECK(near(r.inner, 600, 0.05));
+	// The chip's pulse isn't C4FM's (raised cosine times inverse sinc), so a C4FM receiver sees some ISI: about 6 %
+	// of the outer level RMS, the worst of 2000 symbols still about half open (on air: eye 0.55, EVM 5.9 %). No pulse
+	// register is known; this holds it from getting worse
+	CHECK(r.isi < 0.07 * r.outer && r.eye > 0.4);
+
+	// NXDN 4800 bit/s: 2400 symbols/s, sent doubled; the weight is the deviation (an RRC profile, the chip's pulse)
+	air_profile_t nx = { .sym_rate = 2400, .levels = 4, .shape = AIR_SHAPE_RRC, .shape_param = 20,
+			     .dev_outer_hz = 1050, .timing = AIR_TIMING_CONTINUOUS };
+	r = dev_run(&nx);
+	printf("  NXDN 4800: outer %.0f Hz, inner %.0f Hz, ISI %.0f Hz RMS, eye %.2f\n", r.outer, r.inner, r.isi, r.eye);
+	CHECK(near(r.outer, 1050, 0.015));
+	CHECK(near(r.inner, 350, 0.02));
+	CHECK(r.isi < 0.02 * r.outer && r.eye > 0.9);	// the matched filter: no ISI but the pulse's truncation
+
+	// NXDN 9600 bit/s: the chip's own rate and pulse
+	nx.sym_rate = 4800;
+	nx.dev_outer_hz = 2400;
+	r = dev_run(&nx);
+	printf("  NXDN 9600: outer %.0f Hz, inner %.0f Hz, ISI %.0f Hz RMS, eye %.2f\n", r.outer, r.inner, r.isi, r.eye);
+	CHECK(near(r.outer, 2400, 0.015));
+	CHECK(near(r.inner, 800, 0.02));
+
+	// DMR's own profile gives back the board's bytes, so DMR itself is untouched by the air scaling
+	air_profile_t dmr = { .sym_rate = 4800, .levels = 4, .shape = AIR_SHAPE_RRC, .shape_param = 20,
+			      .dev_outer_hz = 1944, .timing = AIR_TIMING_CONTINUOUS };
+	CHECK(hrc7000_air_mod_bias(&dmr, DMR_MOD_BIAS) == DMR_MOD_BIAS);
 }
 
 static void test_tap(void)
@@ -441,7 +622,7 @@ static void test_tx(void)
 
 	CHECK(hrc7000_air_tx_begin(A));
 	CHECK(REG(C7_WORK_MODE) == C7_WORK_MODE_PHY && REG(C7_LAYER2_CONTROL) == 0x82u && REG(C7_AUDIO_BUFFER_CLR) == 3);
-	CHECK(REG(C7_RF_MOD_BIAS) == 0x01E94949u);
+	CHECK(REG(C7_RF_MOD_BIAS) == 0x01E94949u);	// C4FM 1800 Hz (test_pure)
 	CHECK(half_is(0, NULL) && half_is(1, NULL));
 	CHECK(!hrc7000_air_tx_begin(A) && hrc7000_air_tx_active(A));
 	uint32_t t_begin = now;
@@ -871,6 +1052,7 @@ static void test_fuzz(void)
 int main(void)
 {
 	test_pure();
+	test_deviation();
 	test_tap();
 	test_rx_session();
 	test_tx();

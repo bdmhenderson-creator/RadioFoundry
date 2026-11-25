@@ -42,8 +42,10 @@
 #define HRC7000_AIR_RATE_HZ	8000u
 #define HRC7000_AIR_RX_LO_HZ	0u	// with the band-pass off (10.1: not measured)
 #define HRC7000_AIR_RX_HI_HZ	3000u	// the copy's low-pass (10.1: not measured)
-#define HRC7000_AIR_DMR_DEV_HZ	1820u	// outer deviation the board's DMR modulation bytes give (measured, 10.3), not
-					// DMR's nominal 1944 Hz
+#define HRC7000_AIR_DMR_DEV_HZ	1944u	// symbol weight the board's calibrated DMR modulation bytes give: DMR's own
+					// (measured on air 1911-1958 Hz, 10.3); a matched RRC receiver reads it whole
+#define HRC7000_AIR_C4FM_DEV_HZ	1820u	// what a C4FM receiver reads of those bytes (measured, 10.3): less, because it
+					// integrates the chip's RRC pulse over one symbol
 
 // The large buffers. The board hands over memory the DMR slot engine leaves unused while the chip is held (its event
 // queue), so a session costs no RAM of its own: hence may_alias
@@ -130,7 +132,8 @@ typedef struct hrc7000_air {
 // soft modem's on the tap (air_softmodem_rx_fit)
 uint32_t hrc7000_air_tx_fit(const air_profile_t *p);
 // Pure: RF_MOD_BIAS for a profile from the board's DMR value: both modulation bytes scaled by dev_outer_hz /
-// HRC7000_AIR_DMR_DEV_HZ (deviation is linear in them, 10.2), the bias bits kept
+// HRC7000_AIR_DMR_DEV_HZ, a C4FM profile's by dev_outer_hz / HRC7000_AIR_C4FM_DEV_HZ (deviation is linear in them,
+// 10.2), the bias bits kept
 uint32_t hrc7000_air_mod_bias(const air_profile_t *p, uint32_t dmr_mod_bias);
 
 // buf and sm: memory the board lends while the chip is held (the slot engine's queues)
